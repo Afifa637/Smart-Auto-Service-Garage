@@ -1,0 +1,33 @@
+SMARTGARAGE - ROBOT FULL VEHICLE COVERAGE UPDATE
+================================================
+
+WHAT CHANGED
+------------
+1. Robot reach
+   - Shoulder/lower link: 4.50 scene units
+   - Forearm/upper link: 4.00 scene units
+   - The arm can now span across the central Cybertruck to its right side and
+     reach front/rear corners while the vehicle is on the lift.
+
+2. Head movement
+   - Y = tilt head one direction
+   - H = tilt head the opposite direction
+   - Head pitch is clamped to -90..+90 degrees: exactly 180 degrees total.
+   - LEFT/RIGHT still controls tool roll independently.
+
+3. Collision behaviour
+   - The heavy shoulder link remains blocked by the Cybertruck.
+   - During manual arm positioning, forearm + wrist/tool may enter the vehicle's
+     service envelope so the tool can reach the opposite/right side.
+   - During lift movement, the whole robot/tool becomes a hard obstacle again.
+   - Lift mechanism, pedestal, tool station, floor, ceiling and auxiliary lifts
+     remain protected by collision checks.
+
+ROBOT CONTROLS
+--------------
+T / G          base yaw
+U / J          shoulder
+I / K          elbow
+Y / H          180-degree top/bottom head tilt
+LEFT / RIGHT   wrist/tool roll
+F1..F4         scanner / driver / gripper / polisher

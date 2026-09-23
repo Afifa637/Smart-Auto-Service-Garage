@@ -1,0 +1,35 @@
+SMARTGARAGE - FINAL CYBERTRUCK CORRECTION
+
+Changed files:
+- SceneObjects.cpp / SceneObjects.h
+  * realistic heavy proportions
+  * true 3D five-segment fender flare mesh
+  * protruding closed rear/front bumper blocks
+  * wider/outward larger tyres + tread
+  * material parameters per draw call
+- Shader.cpp
+  * material-aware specular lighting and subtle brushed-metal response
+- Main.cpp
+  * camera-position shader uniform
+  * updated collision envelope for the larger truck
+  * updated Cybertruck teaching stages
+- READ_ME_FIRST.txt
+  * final build notes
+
+Build target: Visual Studio C++20, x64 recommended.
+Open: YoutubeOpenGL.slnx
+Then: Build > Rebuild Solution
+
+
+ROBOT FULL-COVERAGE UPDATE
+--------------------------
+- Lower robot link extended to 4.50 scene units.
+- Upper robot link extended to 4.00 scene units.
+- Base yaw range expanded to -180..+180 degrees.
+- Shoulder/elbow ranges expanded for long-reach folding and far-side access.
+- Wrist/head pitch changed to an exact -90..+90 degree range (180 degrees total).
+- Heavy shoulder link still collides with the serviced Cybertruck.
+- During manual service positioning, forearm + wrist/tool may enter the vehicle
+  service envelope so the tool can reach the far/right side.
+- During lift motion, the complete robot/tool is a hard obstacle again.
+- Safety kinematics in Main.cpp use the same new link lengths as SceneObjects.cpp.

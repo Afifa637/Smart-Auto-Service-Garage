@@ -1,0 +1,20 @@
+BUILD VALIDATION
+================
+The corrected source was syntax-checked with C++20 after the robot reach/head changes:
+
+  g++ -std=c++20 -I./Libraries/include -fsyntax-only Main.cpp SceneObjects.cpp Shader.cpp Primitives.cpp glad.c
+
+Result: PASS (no syntax errors).
+
+Visual Studio build:
+1. Open YoutubeOpenGL.slnx
+2. Select x64 + Debug or Release
+3. Build > Rebuild Solution
+4. Run the newly built executable
+
+Robot coverage controls:
+T/G            base yaw (-180..+180)
+U/J            shoulder
+I/K            elbow
+Y/H            head top/bottom, exactly 180 degrees total (-90..+90)
+LEFT/RIGHT     wrist/tool roll
