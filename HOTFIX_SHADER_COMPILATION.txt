@@ -1,0 +1,30 @@
+SmartGarage_REALISTIC_FINAL - Shader compilation hotfix
+Date: 2026-09-25
+
+Problem observed on Intel OpenGL 3.3 driver:
+    [Shader] scene fragment compilation FAILED:
+    ERROR: 0:53: 'float' : overloaded functions must have the same return type
+
+Cause:
+The fragment shader declared a custom function named:
+    float noise3(vec3 p)
+
+In GLSL, noise3 is already a reserved/built-in noise function family name. Some drivers
+(including the reported Intel OpenGL 3.3 implementation) reject redeclaring the same
+function signature with a different return type.
+
+Fix:
+The custom function was renamed to:
+    float valueNoise3(vec3 p)
+
+All 18 call sites were updated to use valueNoise3(...).
+No rendering behavior or material logic was otherwise changed.
+
+Validation performed:
+- Shader.cpp passes g++ C++20 syntax checking.
+- Shader.cpp passes clang++ C++20 syntax checking.
+- Main.cpp, Shader.cpp, Primitives.cpp and SceneObjects.cpp pass both compilers' syntax checks.
+- glad.c passes C11 syntax checking.
+
+After replacing the project, use Build > Clean Solution and then Build > Rebuild Solution
+in Visual Studio so no stale object files/executable are used.

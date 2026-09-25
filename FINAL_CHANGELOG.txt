@@ -1,0 +1,84 @@
+CYBERTRUCK REALISM V3 - LATEST PASS
+===================================
+- Rearward B-pillar roof apex; longer/shallower windshield.
+- Nearly flush side glazing and narrower window seals.
+- Thin flush polygonal wheel-arch cladding.
+- Triangular-prism mirrors replacing boxy mirror blocks.
+- Subtle door gaps/handles and fold-line catches.
+- Flat near-black polygonal aero wheel covers.
+- Default Cook-Torrance GGX PBR with metallic/roughness workflow.
+- Darker 0.74 exposure, reduced ambient/direct/ceiling lighting, restrained bloom.
+- Reflection cubemap darkened with stronger horizon/ceiling/floor separation.
+
+SMARTGARAGE REALISTIC FINAL - IMPLEMENTATION SUMMARY
+===================================================
+
+Implemented in the requested order:
+
+1. CYBERTRUCK BODY / SIDE PROFILE
+   - Production-inspired faceted stainless silhouette retained as flat body planes.
+   - Hood, steep windshield, roof apex, rear sail/tonneau and tailgate treatment refined.
+   - Sealed polygonal 3D wheel-arch cladding and protruding bumpers retained/refined.
+   - Door shut-lines, flush handles, front-door seams and compact angular side mirrors added.
+   - Thin micro-fold highlight strips added along the hood/roof/rear sail to catch light.
+
+2. WHEELS / FENDERS
+   - Rounded tyre shoulders built from layered smooth barrels.
+   - All-terrain tread blocks, aero-style wheel details, hubs, lugs, brake discs and calipers.
+   - Smooth wheel normals contrasted against hard/flat body normals.
+
+3. MATERIAL / TEXTURE SYSTEM
+   - Material families for concrete, wall/plaster, brushed steel, galvanised metal,
+     chrome, plastic, wood, cardboard, rubber, tyre, painted metal, tinted glass,
+     stainless, brake iron, asphalt, rust, floor paint and carbon/composite.
+   - Procedural albedo, normal/bump, roughness and AO variation.
+   - Emissive treatment for lamps/light bars/indicators.
+   - Material IDs assigned explicitly for critical vehicle surfaces and inferred for legacy scene objects.
+
+4. LIGHTING
+   - Directional entrance/daylight source.
+   - Eight ceiling point lights positioned with the fixture rows.
+   - Robot-scanner spotlight follows the scanner pose.
+   - Material-aware diffuse/specular response.
+
+5. PHONG + GOURAUD
+   - F5 toggles per-fragment Cook-Torrance GGX PBR and the retained per-vertex Gouraud comparison mode.
+   - Cook-Torrance GGX PBR is the default realistic mode.
+
+6. REFLECTIONS / SHADOWS
+   - Startup-generated OpenGL cubemap reflection probe.
+   - Fresnel-weighted stainless/glass environment reflections.
+   - 2048x2048 directional shadow map with 3x3 PCF filtering.
+
+7. HDR / POST PROCESSING
+   - HDR scene + bright-pass render targets.
+   - Gaussian bloom (toggleable).
+   - ACES-like tone mapping.
+   - Gamma correction.
+   - Lightweight post-process anti-aliasing.
+
+8. RUNTIME DEBUG / PRESENTATION CONTROLS
+   F5  Cook-Torrance PBR / Gouraud
+   F6  Material maps ON/OFF
+   F7  Normal/bump maps ON/OFF
+   F8  Shadows ON/OFF
+   F9  Cubemap reflections ON/OFF
+   F10 Bloom ON/OFF
+
+9. EXISTING FUNCTIONALITY PRESERVED
+   - Camera controls
+   - Garage door
+   - Vehicle lift
+   - Robot reach / articulation
+   - Tool changing / scanner
+   - Collision logic
+   - Cybertruck construction/teaching mode
+
+BUILD / VALIDATION
+------------------
+- The C++ sources were syntax-checked with both g++ C++20 and clang++ C++20.
+- The Visual Studio project XML parses correctly.
+- The bundled GLFW library is the Windows library, so the final OpenGL/GLSL runtime must
+  be compiled and tested on Windows/Visual Studio.
+- Open YoutubeOpenGL.slnx and build x64 Debug or x64 Release.
+- Clean source package: stale Visual Studio caches and old binaries were deliberately removed.

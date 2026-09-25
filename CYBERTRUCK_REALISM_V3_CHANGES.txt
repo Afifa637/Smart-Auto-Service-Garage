@@ -1,0 +1,31 @@
+CYBERTRUCK REALISM V3 - USER REQUESTED FIXES
+===========================================
+
+GEOMETRY
+- Roof apex moved rearward to the B-pillar region.
+- Windshield slope lengthened and made shallower.
+- Side glazing moved nearly flush with the stainless body.
+- Wheel-arch cladding made thinner, polygonal and less protruding.
+- Rectangular mirror blocks replaced with triangular-prism mirror meshes.
+- Door seams/handles reduced in width and visual contrast.
+- Fold-highlight strips reduced to micro edge catches.
+- Wheels changed to shallow black polygonal aero-cover styling.
+
+MATERIALS / SHADERS
+- Default realistic branch upgraded from Blinn-Phong to Cook-Torrance GGX PBR.
+- Metallic/roughness stainless tuned darker and more neutral.
+- Glass changed to dark glossy reflective treatment.
+- Roughness-aware cubemap mip sampling added for reflections.
+
+LIGHTING / BRIGHTNESS
+- Exposure: 1.05 -> 0.74.
+- Directional light intensity: 1.10 -> 0.68.
+- Ceiling point lights: 2.30 -> 1.28.
+- Ambient contribution reduced.
+- Bloom strength and threshold reduced.
+- Procedural environment cubemap darkened and given horizon bands.
+- Scanner spotlight retained as a distinct cyan source.
+
+VALIDATION
+- C++20 syntax check passed with g++ for Main.cpp, Primitives.cpp, SceneObjects.cpp and Shader.cpp.
+- Windows/Visual Studio runtime test is still recommended because the ZIP bundles a Windows glfw3.lib.
