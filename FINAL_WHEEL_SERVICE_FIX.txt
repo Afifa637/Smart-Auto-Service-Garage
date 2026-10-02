@@ -1,0 +1,66 @@
+SMARTGARAGE AUTO SERVICE V3 - FINAL WHEEL/SURFACE FIX
+=====================================================
+
+Implemented changes:
+
+1. ROBOT/CAR PENETRATION FIX
+- Replaced the previous over-extended "safe" robot pose with a compact folded pose.
+- Recalibrated scanner and polisher surface poses so wristPitch = 90 degrees.
+- The tool now points outward toward the Cybertruck side skin rather than downward through the body.
+- Added separate, slightly more retracted cleaning poses because the held sponge extends farther from the wrist than the scanner/polisher.
+- Automatic transitions retract the arm before changing base yaw or changing tools.
+
+2. IMPACT DRIVER WHEEL SERVICE
+- Added a final front-left wheel fastener service after polishing.
+- Robot changes to the existing impact driver.
+- Five visible service lug nuts are rendered on the front-left wheel.
+- Robot tightens them in a simple star pattern: 1 -> 3 -> 5 -> 2 -> 4.
+- The impact-driver socket visibly rotates.
+- Each lug nut rotates and moves inward from a slightly protruding position to a seated position.
+- Amber pre-service wheel indication fades as the lugs are tightened.
+- A restrained green wheel-hub confirmation effect appears after all five fasteners are secured.
+
+3. SIMPLE IMPLEMENTATION RETAINED
+- No AI.
+- No inverse kinematics.
+- No path planning.
+- No rigid-body wheel physics.
+- Uses predefined RobotPose values, finite-state sequencing, interpolation, and simple visual state values.
+
+AUTOMATIC SEQUENCE
+------------------
+ENTER
+ -> door closes
+ -> lift raises
+ -> scanner inspects side panel
+ -> gripper picks up sponge
+ -> three cleaning passes / dirt disappears
+ -> sponge returned
+ -> polisher selected / two polishing passes / shine effect
+ -> impact driver selected
+ -> five front-left wheel fasteners tightened
+ -> green wheel-secured effect
+ -> driver returned
+ -> robot HOME
+ -> lift lowers
+ -> door opens
+ -> COMPLETE
+
+BUILD VALIDATION
+----------------
+Source syntax was validated with BOTH:
+
+g++ -std=c++20 -fsyntax-only -I./Libraries/include Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp
+clang++ -std=c++20 -fsyntax-only -I./Libraries/include Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp
+
+Both passed.
+
+RUN
+---
+1. Open YoutubeOpenGL.slnx in Visual Studio.
+2. Select x64.
+3. Build > Rebuild Solution.
+4. Run the newly rebuilt executable.
+5. Confirm title contains: SmartGarage AUTO SERVICE v3
+6. Press ENTER.
+7. R resets the complete service.

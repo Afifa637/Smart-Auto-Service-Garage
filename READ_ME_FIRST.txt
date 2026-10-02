@@ -1,6 +1,183 @@
 SMARTGARAGE - CYBERTRUCK + COLLISION-SAFE FINAL BUILD
 =====================================================
 
+V6 - CYBERTRUCK REALISM AND RENDERING UPGRADE (LATEST)
+------------------------------------------------------
+Full write-up, with measurements and known limitations:
+    V6_REALISM_AND_RENDERING.md
+
+Headline changes:
+
+ RENDERING
+ - Split-sum environment BRDF added.  The stainless body is metallic 0.97 and
+   so has no diffuse response at all; without this term it received almost no
+   environment energy and rendered as a near-black silhouette.
+ - HDR environment probe, 128px RGB16F.  Ceiling strips sit above 1.0 so they
+   survive tone mapping as real bright streaks on the panels.
+ - Anisotropic GGX for brushed stainless, plus a clear-coat lobe for painted
+   and composite surfaces, and multi-scatter energy compensation.
+ - Real 4x MSAA.  The old build set GLFW_SAMPLES but rendered into a
+   single-sample HDR target, so multisampling was never actually used.
+ - Half-resolution bloom, 5x5 PCF shadows, ACES tone map, split-tone grade,
+   vignette and fine sensor grain.
+
+ THE VEHICLE
+ - Body re-measured against Reference/03_reference_side.png.  The hood and
+   windscreen now form one straight line (slopes 0.319 / 0.325) instead of a
+   flat hood meeting a steep screen (0.09 / 0.42).
+ - Roof apex, flat-roof length, body width and the sail panel all corrected.
+ - Stamped fold ribs along every body line, so the folds catch a specular
+   highlight instead of vanishing.
+ - Wheel-arch cladding widened from 28 mm to 95 mm, seven-spoke aero cover,
+   recessed light channels with real lenses, sloping vault cover.
+
+ POLISHING NOW DOES SOMETHING
+ - The side skin is its own mesh batch with its own surface finish, so the
+   flanks really do drop from 0.40 roughness to 0.16 while the hood, roof and
+   tailgate keep the factory finish.  Same mesh, two finishes, same frame.
+
+ THE ROBOT
+ - All 17 service poses re-solved against each tool's real working face.  The
+   impact driver was reaching 211 mm INSIDE the wheel; the polishing pad was
+   stopping 225 mm short of the panel.  Both now touch.
+ - Arm shaded as matte powder coat.  It was being classified as brushed
+   stainless, which gave it a mirror finish and a camouflage grain.
+ - Scanner head parks level looking down instead of pitched -74 degrees.
+
+ v6.1 - COLLISION AUDIT + THE TWO MISSING SYLLABUS TOPICS
+ - A sweep that replays every service pose AND every transition found the tool
+   passing through the bodywork three different ways:
+     * the panel stand-off had the wrong SIGN, putting the tool 12 mm inside
+       the skin (the robot works from the more-negative side of x = -1.030)
+     * a wipe was one long interpolation; joint angles interpolate linearly but
+       the tool tip swings through an ARC, which dipped 83 mm into the body at
+       the midpoint of a sweep.  Each wipe is now three shorter segments and the
+       worst point of any pass is 2.2 mm CLEAR of the panel.
+     * manual control passed "allowVehicleServiceContact = true", which did not
+       mean "may approach" - it meant the forearm and tool were not tested
+       against the vehicle AT ALL.  There are now two volumes: an approach
+       volume the tool may enter, and a vehicle SOLID that nothing may enter.
+ - The collision test now uses the tool that is actually fitted (the impact
+   driver is 1.15 m, not the 0.95 m stub the test assumed - which is exactly
+   how it went through a wheel unnoticed).
+ - PROJECTION: BACKSPACE switches perspective <-> orthographic.  The routine
+   existed but was only ever used for the shadow map, where it is invisible.
+ - TEXTURES: a real 4-layer GL_TEXTURE_2D_ARRAY (concrete, plaster, asphalt,
+   steel tread plate) with mipmaps, GL_REPEAT and 8x anisotropic filtering,
+   sampled by TRIPLANAR projection.  Before this there was no texture object,
+   no UV and no mip chain anywhere in the material path - all four samplers in
+   the program were the shadow map, the cubemap and the two post buffers.
+   F6 now toggles the whole material system.
+ - Also fixed: the polisher's rotation markers hung 48 mm below the pad in mid
+   air, and the polish stage ran only two of its three authored passes.
+
+ v6.2 - THE FRONT OF THE VEHICLE, AND THE WORLD OUTSIDE
+ - THE FRONT is now built in layers like the real one, instead of one flat
+   stainless slab:  stainless hood lip overhanging -> full-width light blade in
+   its channel -> DARK GREY fascia raked back under the lip -> black bumper.
+   Rendering the fascia as bare steel is what made the nose read as a blank
+   wall.
+ - The light blade was present but SWITCHED OFF (vehicleLights defaulted to
+   false, so it drew at 6% emissive).  On the real vehicle it is a daytime
+   running light: it is now on by default, spans the full width instead of 87%,
+   sits just behind the hood lip, and wraps around each front corner.
+ - Two driving lamps added low in the bumper.  There were none at all before.
+ - OUTSIDE: the nine distant tower blocks and the four parked cars are gone.
+   The forecourt is narrowed from 30 m to 20 m and walled on both sides, so the
+   doorway frames a contained yard instead of an open field.
+ - A through road now carries LIVE TRAFFIC across the opening - one vehicle
+   looping left to right, wheels rolling at the rate the distance demands.
+   PAGE UP stops/starts it.
+ - A graded sky backdrop stands behind the wall, so the opening is daylight
+   rather than a black rectangle.
+
+ v6.3 - PROPORTIONS, GRIME, AND LIGHT THAT STOPS AT SURFACES
+ - Two proportion errors found by MEASURING the side reference, not by eye:
+     * the hood and windscreen slopes were INVERTED.  The real vehicle's hood
+       is the steeper of the two (0.394 vs 0.311); the project had 0.319 vs
+       0.366, leaving the cowl 144 mm too low - a long shallow hood with a
+       tall pinched cabin behind it.  Corrected to 0.395 / 0.292.
+     * the wheels were 18% OVERSIZE (R = 0.495 against a true 0.445 for
+       35-inch tyres).  Corrected to 0.450.  That moved every lug 45 mm down,
+       so all five wheel poses were re-solved - socket tip now lands within
+       0.4 mm of the nut face.
+ - DIRT is no longer geometry.  It was six flat boxes floating 4 mm off the
+   door skin, which is exactly how it read.  It is now shaded ON the surface:
+   collects low and thins with height, blotchy and vertically streaked, and
+   crucially it DROPS THE METALLIC TERM - dust is a dielectric, so it kills the
+   reflection underneath instead of tinting it.  Without that step it just
+   looks like grey paint.
+ - THE LAMP NO LONGER SHINES THROUGH THINGS.  The inspection light had no
+   occlusion at all - its beam went straight through the vehicle and the lift.
+   There is now a SECOND SHADOW MAP rendered from the lamp itself.
+ - The travelling highlight after polishing is GONE.  A bright bar crawling
+   across a finished panel is not something a polished surface does; it was a
+   second scan line in a different colour.  The polish now shows as what it
+   physically is - the flank drops from 0.40 roughness to 0.16.
+ - THE SCAN IS NOW AN INSPECTION.  The head flies the whole length of the
+   vehicle first - nose, cowl, roof, bed, hovering 620 mm above the skin and
+   looking down - and only then drops to the flank where the dirt is.
+
+ v9 - ROBOT MOTION, TOOL RACK AND COMPLETE SCANNING
+ MOTION - three faults that compounded:
+   * angles were interpolated RAW, so 170 deg -> -170 deg (a 20 deg step) was
+     run the long way round as -340.  Every rotation now takes the SHORTEST
+     signed path.
+   * each joint ran at its own fixed rate, so the one with least to do finished
+     first and the arm moved in stages.  All five joints now share ONE timeline.
+   * motion started and stopped abruptly.  The timeline is now EASED with a
+     smoothstep, and speedScale per call site sets fast travel / slow docking /
+     slow scanning.
+ TOOL RACK:
+   * the 2.55 x 1.20 m vertical BACKBOARD is gone.  It forced every tool change
+     to be approached from the side - which is what drove the long base
+     rotations - and stood exactly where the wrist wanted to descend.
+   * tools were positioned by their CENTRE, so the longer heads sat halfway
+     inside the tabletop.  Each tool now declares how far its lowest part hangs
+     below its frame and stands ON its dock.
+   * tools were drawn at 0.62 scale on the rack and 1.0 on the robot, so a head
+     changed size the moment it was picked up.  Both are 1.0 now.
+   * 2 x 2 layout with a dock pedestal under each tool.
+ TOOL CHANGE is now PERFORMED, not swapped: lower onto the dock, pause,
+   release, lift the BARE wrist, hold 0.55 s with the bare connector and all
+   four tools visible on the table, then across, down, latch and lift.
+ SCANNING now covers SIX REGIONS - front/hood, windscreen, roof, upper side,
+   lower side, rear side/bed - each entered and left through a staging pose,
+   lens held 0.24 m off the surface, with a coverage percentage in the status.
+ COLLISION: a sweep replays every pose AND every transition against the car,
+   both wheels, the lift, the table and the pedestal, testing link 1, link 2
+   and the fitted tool.  It found and fixed: the top->side move clipping the
+   roof by 97 mm, band-to-band traverses dragging 78 mm through the door, and
+   rack<->work moves clipping a wheel.  Final: nothing deeper than 3 mm
+   anywhere, which is the intended sponge/pad contact.
+
+ NEW MOTION AND INTERACTION
+ - ;  work lights    '  vehicle lights    /  neon sign    END  hazard beacon
+ - 9 / 0  fan speed (the fan previously never turned at all)
+ - HOME   drive the vehicle out of the bay and back, wheels rolling at the
+          rate the distance travelled demands
+ - F12    hands-free showcase orbit for presenting    M  lighting presets
+ - F      save a screenshot     V  geometry + render report
+ - BACKSPACE  perspective <-> orthographic projection
+ - F6     material textures on/off (sampled array + procedural detail)
+
+PREVIOUS RELEASES
+-----------------
+
+AUTOMATIC SURFACE SERVICE UPDATE (LATEST)
+-----------------------------------------
+- The main Cybertruck remains on the existing lift; it does not drive in/out.
+- ENTER now runs a simple predefined scan -> sponge pickup -> 3-pass clean ->
+  rotary polish -> robot home -> lift down -> door open demonstration.
+- R resets the complete automatic service and camera.
+- No AI, computer vision, runtime IK or rigid-body physics was added.
+- Added visible dirt removal, polish/reflection improvement, scanner sweep,
+  warning/completion indicators, soft blue sponge and visibly rotating pad.
+- Work-stool cushion is now rounded blue padded vinyl/foam.
+- Exterior road is darker realistic asphalt with aggregate/patch/crack detail.
+
+See AUTOMATIC_SERVICE_GUIDE.txt for the sequence and viva explanation.
+
 CYBERTRUCK REALISM V3 (LATEST)
 ------------------------------
 This ZIP includes the latest requested visual pass:

@@ -1,0 +1,80 @@
+SMARTGARAGE - AUTOMATIC SURFACE SERVICE DEMO
+============================================
+
+WHAT WAS ADDED
+--------------
+The main Cybertruck stays on the existing hydraulic lift. Press ENTER once to
+run a predefined automatic surface-maintenance demonstration:
+
+1. Garage door closes with an amber warning beacon.
+2. Lift raises to a moderate service height.
+3. Robot scans one side panel with the existing scanner.
+4. A predefined "surface contamination detected" result is shown in the
+   window title.
+5. Robot changes to the gripper.
+6. Gripper opens, lowers onto a soft blue cleaning sponge, closes, and the
+   sponge becomes parented to the gripper.
+7. Robot performs three wiping passes. The dirty patch progressively fades.
+8. Robot returns the sponge to the table and releases it.
+9. Robot changes to the existing rotary polisher.
+10. The polishing pad visibly spins and performs two passes.
+11. The cleaned patch gains a slightly lower roughness / stronger reflection.
+12. A short realistic highlight sweep shows the finished surface.
+13. Robot returns the polisher at the tool station and returns HOME.
+14. Lift lowers, garage door opens, and the green completion lamp stays on.
+
+CONTROLS
+--------
+ENTER   Start the complete automatic service.
+R       Reset the automatic service and camera.
+
+All original manual controls are retained when the automatic sequence is not
+running. During the automatic sequence, camera movement remains available but
+manual mechanism controls are temporarily ignored so they cannot interrupt the
+scripted service.
+
+SIMPLE VIVA EXPLANATION
+-----------------------
+"The automatic service is a finite-state animation. It does not use AI,
+computer vision, inverse kinematics or a physics engine. The robot moves between
+hand-authored joint-angle poses using interpolation. The sponge pickup is done
+by changing the sponge from the tool-table transform to the gripper transform
+when the gripper closes. Cleaning is represented by decreasing a dirt amount,
+and polishing is represented by reducing the serviced patch roughness while the
+existing polishing disc rotates."
+
+MAIN STATES
+-----------
+IDLE
+DOOR_CLOSE
+LIFT_UP
+SCAN
+GET_SPONGE
+CLEAN
+RETURN_SPONGE
+GET_POLISHER
+POLISH
+ROBOT_HOME
+LIFT_DOWN
+DOOR_OPEN
+COMPLETE
+
+VISUAL REALISM IMPROVEMENTS
+---------------------------
+- Work-stool cushion changed from a hard cylinder to a rounded blue padded
+  vinyl/foam form with a dark seam.
+- Exterior asphalt darkened to realistic charcoal and given larger aggregate,
+  repaired patches and subtle crack marks in addition to the existing shader
+  procedural asphalt texture.
+- Service-bay floor gains restrained tyre tracks and small scuffs.
+- Blue sponge uses rounded primitive geometry and a soft high-roughness surface.
+- Polisher pad is dark blue/soft-looking and has rotating fabric markers so its
+  spin is visible.
+- Dirty panel, scanner beam, polishing response, final highlight, amber warning
+  beacon and green service-complete indicator were added.
+
+BUILD
+-----
+Open YoutubeOpenGL.slnx in Visual Studio and REBUILD the solution before
+running. Existing compiled Debug/Release binaries in an extracted old project
+may not contain the new source changes until rebuilt.

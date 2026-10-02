@@ -23,6 +23,38 @@ static int gLocEmissive = -1;
 static int gLocMetallic = -1;
 static int gLocRoughness = -1;
 static int gLocMaterialType = -1;
+static int gLocPolish = -1;
+static int gLocClearCoat = -1;
+static int gLocAnisotropy = -1;
+static int gLocTextureLayer = -1;
+static int gLocTextureScale = -1;
+static int gLocDirt = -1;
+
+// Mirrors the F6 switch, so turning material maps off also stops the sampled
+// textures - otherwise the toggle would only disable half the material system.
+static bool gTexturesOn = true;
+
+// ---- SECTION 0b - SURFACE FINISH STATE ------------------------------------
+//  A small piece of render state that sits beside the material.  The material
+//  says WHAT a surface is made of; the finish says HOW IT HAS BEEN WORKED:
+//  as-rolled, deburred, machine polished.  Keeping it separate means the
+//  robot's polishing pass can change the finish of one region of the body
+//  without the model needing a second set of materials.
+struct SurfaceFinish
+{
+    float polish    = 0.0f;   // 0 = as manufactured, 1 = machine polished
+    float clearCoat = -1.0f;  // < 0 = use the material default
+    float anisotropy = -1.0f; // < 0 = use the material default
+    int   materialType = -1;  // < 0 = let each draw infer its own material
+    float dirt = 0.0f;        // road grime lying on the surface
+};
+static SurfaceFinish gFinish;
+
+// ---- SECTION 0c - SCENE SWITCHES ------------------------------------------
+static Scene::SceneSwitches gSwitches;
+
+void Scene::setSwitches(const SceneSwitches& s) { gSwitches = s; }
+const Scene::SceneSwitches& Scene::switches() { return gSwitches; }
 
 // Presentation-only draw filter: progressively reveals existing draw calls.
 static bool gTeachingDrawEnabled = false;
@@ -69,7 +101,43 @@ void Scene::init(unsigned int shaderProgram)
     gLocMetallic = glGetUniformLocation(gProgram, "uMetallic");
     gLocRoughness = glGetUniformLocation(gProgram, "uRoughness");
     gLocMaterialType = glGetUniformLocation(gProgram, "uMaterialType");
+    gLocPolish = glGetUniformLocation(gProgram, "uPolish");
+    gLocClearCoat = glGetUniformLocation(gProgram, "uClearCoat");
+    gLocAnisotropy = glGetUniformLocation(gProgram, "uAnisotropy");
+    gLocTextureLayer = glGetUniformLocation(gProgram, "uTextureLayer");
+    gLocTextureScale = glGetUniformLocation(gProgram, "uTextureScale");
+    gLocDirt = glGetUniformLocation(gProgram, "uDirt");
 }
+
+void Scene::setSurfaceDirt(float dirt)
+{
+    gFinish.dirt = (dirt < 0.0f) ? 0.0f : (dirt > 1.0f ? 1.0f : dirt);
+}
+
+void Scene::setTexturesEnabled(bool on) { gTexturesOn = on; }
+
+// ---------------------------------------------------------------------------
+//  Surface-finish API.  Call setSurfaceFinish() before a group of draws and
+//  clearSurfaceFinish() after it.  Anything drawn in between is shaded with
+//  that finish; everything else keeps the material default.  This is what
+//  makes the polished side panels visibly shinier than the untouched panels
+//  on the very same body mesh.
+// ---------------------------------------------------------------------------
+void Scene::setSurfaceFinish(float polish, float clearCoat, float anisotropy,
+                             int materialType)
+{
+    gFinish.polish = (polish < 0.0f) ? 0.0f : (polish > 1.0f ? 1.0f : polish);
+    gFinish.clearCoat = clearCoat;
+    gFinish.anisotropy = anisotropy;
+    gFinish.materialType = materialType;
+}
+
+void Scene::clearSurfaceFinish()
+{
+    gFinish = SurfaceFinish();
+}
+
+float Scene::currentPolish() { return gFinish.polish; }
 
 
 // ============================================================================
@@ -128,6 +196,12 @@ static const int MAT_ASPHALT = 15;
 static const int MAT_RUST = 16;
 static const int MAT_PAINT = 17;
 static const int MAT_CARBON = 18;
+static const int MAT_TREAD = 19;   // steel non-slip plate (lift runways)
+// A flat emissive surface with NO procedural detail and no sampled texture.
+// The sky was being drawn as MAT_PAINT, whose worn-paint branch speckles the
+// albedo with chips - which is correct for a painted floor and very wrong for
+// a sky, where it showed up as dirt scattered across the horizon.
+static const int MAT_SKY = 20;
 
 // ---------------------------------------------------------------------------
 // Material inference keeps the original object-building API compact while
@@ -189,7 +263,9 @@ static void resolveMaterial(int type, float& metallic, float& roughness)
     {
     case 1:  metallic = 0.0f;  roughness = (roughness < 0.82f ? 0.86f : roughness); break;
     case 2:  metallic = 0.0f;  roughness = (roughness < 0.72f ? 0.78f : roughness); break;
-    case 3:  metallic = (metallic < 0.68f ? 0.72f : metallic); roughness = (roughness > 0.48f ? 0.38f : roughness); break;
+    case 3:  metallic = (metallic < 0.68f ? 0.72f : metallic);
+             roughness = (roughness < 0.06f) ? 0.06f : ((roughness > 0.52f) ? 0.52f : roughness);
+             break;
     case 4:  metallic = (metallic < 0.55f ? 0.62f : metallic); roughness = 0.48f; break;
     case 5:  metallic = (metallic < 0.90f ? 0.95f : metallic); roughness = (roughness > 0.22f ? 0.15f : roughness); break;
     case 6:  metallic = 0.0f;  roughness = (roughness < 0.48f ? 0.58f : roughness); break;
@@ -199,26 +275,110 @@ static void resolveMaterial(int type, float& metallic, float& roughness)
     case 10: metallic = 0.03f; roughness = (roughness > 0.72f ? 0.58f : roughness); break;
     case 11: metallic = 0.04f; roughness = 0.075f; break;
     case 12: metallic = 0.0f;  roughness = 0.95f; break;
-    case 13: metallic = (metallic < 0.90f ? 0.92f : metallic); roughness = (roughness > 0.34f ? 0.25f : roughness); break;
+    // Stainless accepts the whole as-rolled..mirror range.  The old rule
+    // silently snapped anything above 0.34 back down to 0.25, which made it
+    // impossible to ask for a genuinely matte as-rolled finish - and therefore
+    // impossible to show a convincing before/after when polishing it.
+    case 13: metallic = (metallic < 0.90f ? 0.92f : metallic);
+             roughness = (roughness < 0.05f) ? 0.05f : ((roughness > 0.48f) ? 0.48f : roughness);
+             break;
     case 14: metallic = 0.78f; roughness = 0.45f; break;
     case 15: metallic = 0.0f;  roughness = 0.96f; break;
     case 16: metallic = 0.22f; roughness = 0.84f; break;
     case 17: metallic = 0.0f;  roughness = 0.68f; break;
     case 18: metallic = 0.10f; roughness = 0.44f; break;
+    case 19: metallic = 0.72f; roughness = 0.46f; break;
+    case 20: metallic = 0.0f;  roughness = 1.0f;  break;
     default: break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Default finish per material.
+//
+//  clearCoat  - how much of a smooth transparent top layer the surface has.
+//               Automotive paint and glass have a lot, bare rolled steel has
+//               almost none, concrete and rubber have none at all.
+//  anisotropy - how directional the micro-grain is.  Rolled/brushed stainless
+//               is strongly grained along its length, which is why a real
+//               Cybertruck panel shows a long smeared highlight rather than a
+//               round one.  Cast, moulded and woven surfaces are isotropic.
+// ---------------------------------------------------------------------------
+static void defaultFinish(int type, float& clearCoat, float& anisotropy)
+{
+    clearCoat = 0.0f;
+    anisotropy = 0.0f;
+    switch (type)
+    {
+    case MAT_BRUSHED_STEEL: clearCoat = 0.04f; anisotropy = 0.62f; break;
+    case MAT_STAINLESS:     clearCoat = 0.06f; anisotropy = 0.78f; break;
+    case MAT_CHROME:        clearCoat = 0.10f; anisotropy = 0.10f; break;
+    case MAT_GALV:          clearCoat = 0.02f; anisotropy = 0.30f; break;
+    case MAT_PAINTED_METAL: clearCoat = 0.45f; anisotropy = 0.0f;  break;
+    case MAT_PAINT:         clearCoat = 0.30f; anisotropy = 0.0f;  break;
+    case MAT_PLASTIC:       clearCoat = 0.12f; anisotropy = 0.0f;  break;
+    case MAT_CARBON:        clearCoat = 0.55f; anisotropy = 0.0f;  break;
+    case MAT_BRAKE:         clearCoat = 0.0f;  anisotropy = 0.45f; break;
+    default: break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Which layer of the material texture array a material uses, and how many
+//  tiles it gets per metre.  A material with no entry falls back to the purely
+//  procedural path, which is still what most of the scene uses.
+// ---------------------------------------------------------------------------
+static int textureLayerFor(int type)
+{
+    switch (type)
+    {
+    case MAT_CONCRETE: return 0;
+    case MAT_WALL:     return 1;
+    case MAT_ASPHALT:  return 2;
+    case MAT_TREAD:    return 3;
+    default:           return -1;
+    }
+}
+
+static float textureScaleFor(int type)
+{
+    switch (type)
+    {
+    case MAT_CONCRETE: return 0.34f;   // one tile per ~2.9 m of floor
+    case MAT_WALL:     return 0.46f;
+    case MAT_ASPHALT:  return 0.30f;
+    case MAT_TREAD:    return 3.60f;   // one tile per ~0.28 m - fine plate
+    default:           return 1.0f;
     }
 }
 
 static void uploadMaterialUniforms(const Vec3& color, float emissive, float metallic,
                                    float roughness, int forcedType = -1)
 {
-    int type = (forcedType >= 0) ? forcedType : inferMaterialType(color, emissive, metallic, roughness);
+    // A material named at the call site always wins.  Otherwise a finish-level
+    // override applies, and only if there is neither does the draw fall back to
+    // guessing the material from its colour.
+    int type = (forcedType >= 0) ? forcedType
+             : ((gFinish.materialType >= 0) ? gFinish.materialType
+             : inferMaterialType(color, emissive, metallic, roughness));
     resolveMaterial(type, metallic, roughness);
+
+    float coat = 0.0f, aniso = 0.0f;
+    defaultFinish(type, coat, aniso);
+    if (gFinish.clearCoat >= 0.0f)  coat = gFinish.clearCoat;
+    if (gFinish.anisotropy >= 0.0f) aniso = gFinish.anisotropy;
+
     glUniform3f(gLocColor, color.x, color.y, color.z);
     glUniform1f(gLocEmissive, emissive);
     glUniform1f(gLocMetallic, metallic);
     glUniform1f(gLocRoughness, roughness);
     glUniform1i(gLocMaterialType, type);
+    glUniform1f(gLocPolish, gFinish.polish);
+    glUniform1f(gLocClearCoat, coat);
+    glUniform1f(gLocAnisotropy, aniso);
+    glUniform1i(gLocTextureLayer, gTexturesOn ? textureLayerFor(type) : -1);
+    glUniform1f(gLocTextureScale, textureScaleFor(type));
+    glUniform1f(gLocDirt, gFinish.dirt);
 }
 
 void Scene::drawCube(const Mat4& model, const Vec3& color, float emissive, float metallic, float roughness, int materialType)
@@ -300,6 +460,94 @@ void Scene::drawSphere(const Mat4& model, const Vec3& color, float emissive, flo
 
 // A cheap hash: takes an integer, returns a repeatable pseudo-random 0..1.
 // This is the classic fract(sin(x) * large) trick from shader code.
+// ============================================================================
+//  SECTION 1b - IMPERFECTION HELPERS
+//
+//  Real objects are never identical and never perfectly aligned. A row of
+//  twenty drums that share one colour, one angle and one exact spacing reads
+//  instantly as copy-paste, which is one of the strongest "this is computer
+//  generated" signals there is.
+//
+//  The fix is to give every repeated instance a small, DETERMINISTIC variation
+//  derived from its index. Deterministic matters: if we used rand() the scene
+//  would shimmer differently every frame. The same index always produces the
+//  same number, so the garage looks untidy but never flickers.
+// ============================================================================
+
+// A cheap hash: takes an integer, returns a repeatable pseudo-random 0..1.
+// This is the classic fract(sin(x) * large) trick from shader code.
+// ============================================================================
+//  SECTION 1d - CURVE-BASED GEOMETRY
+//
+//  Every other object here is a transformed box, cylinder or sphere.  These
+//  build their shape from a PARAMETRIC CURVE, which is a different kind of
+//  modelling and the only place in the project where geometry follows an
+//  equation rather than a transform.
+// ============================================================================
+
+// Orient the unit cylinder (whose axis is its local +Y) along an arbitrary
+// direction d.  Composing rotateY(a) * rotateZ(b) and applying it to (0,1,0)
+// gives
+//
+//      ( -sin b cos a ,  cos b ,  sin b sin a )
+//
+// so matching that to d yields  b = acos(d.y)  and  a = atan2(d.z, -d.x).
+// Two Euler angles are enough because a cylinder is rotationally symmetric
+// about its own axis - the roll is simply not observable.
+void Scene::drawTubeSegment(const Mat4& parent, const Vec3& from, const Vec3& to,
+                            float radius, const Vec3& color,
+                            float metallic, float roughness, int materialType)
+{
+    Vec3 d = to - from;
+    const float len = length(d);
+    if (len < 1e-5f) return;
+    d = d * (1.0f / len);
+
+    const float b = std::acos((d.y < -1.0f) ? -1.0f : ((d.y > 1.0f) ? 1.0f : d.y));
+    const float a = std::atan2(d.z, -d.x);
+
+    const Vec3 mid = (from + to) * 0.5f;
+    drawCylS(parent * translate(mid)
+             * rotateY(a * 180.0f / PI_F)
+             * rotateZ(b * 180.0f / PI_F)
+             * scale(radius * 2.0f, len, radius * 2.0f),
+             color, 0.0f, metallic, roughness, materialType);
+}
+
+void Scene::drawBezierHose(const Mat4& parent,
+                           const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
+                           float radius, int segments, const Vec3& color,
+                           int materialType)
+{
+    if (segments < 2) segments = 2;
+
+    // B(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+    auto bezier = [&](float t) -> Vec3
+    {
+        const float u = 1.0f - t;
+        return p0 * (u * u * u)
+             + p1 * (3.0f * u * u * t)
+             + p2 * (3.0f * u * t * t)
+             + p3 * (t * t * t);
+    };
+
+    Vec3 prev = bezier(0.0f);
+    for (int i = 1; i <= segments; ++i)
+    {
+        const float t = static_cast<float>(i) / static_cast<float>(segments);
+        const Vec3 cur = bezier(t);
+        drawTubeSegment(parent, prev, cur, radius, color, 0.0f, 0.86f, materialType);
+        // A sphere at each knot rounds the joint between two straight tube
+        // sections, so the sweep reads as one continuous hose instead of a
+        // chain of separate cylinders.
+        if (i < segments)
+            drawSphere(parent * translate(cur) * scale(radius * 2.05f, radius * 2.05f, radius * 2.05f),
+                       color, 0.0f, 0.0f, 0.86f, materialType);
+        prev = cur;
+    }
+}
+
+
 float Scene::hash01(int index)
 {
     float x = std::sin(static_cast<float>(index) * 12.9898f) * 43758.5453f;
@@ -443,18 +691,109 @@ static const float LIFT_MAX_H = 4.00f;  // travel of the animation parameter
 // roof and sloping tonneau make the silhouette read as a Cybertruck while
 // preserving the assignment rule: only the existing primitive meshes are used.
 static const float CAR_LENGTH = 5.68f;    // production-like overall proportion
-static const float CAR_WIDTH = 2.20f;     // stainless body width; tyres sit only slightly wider
-static const float CAR_FWHEEL_R = 0.495f; // 35-inch-class visual proportion
-static const float CAR_FWHEEL_W = 0.390f;
-static const float CAR_RWHEEL_R = 0.500f;
-static const float CAR_RWHEEL_W = 0.400f;
+static const float CAR_WIDTH = 2.06f;     // stainless body width across the doors (2.03 m real)
+// 35-inch tyres are 0.889 m across, so the radius is 0.445.  Measured off the
+// side reference the wheels came out at R = 0.421; the project was using 0.495,
+// which is an 18% oversize and is a large part of why the vehicle read as a
+// toy with outsized wheels rather than a pickup.
+static const float CAR_FWHEEL_R = 0.450f;
+static const float CAR_FWHEEL_W = 0.380f;
+static const float CAR_RWHEEL_R = 0.455f;
+static const float CAR_RWHEEL_W = 0.390f;
 static const float CAR_FAXLE_Z = -1.73f;  // long production-style wheelbase
 static const float CAR_RAXLE_Z = 1.73f;
 static const float CAR_FTRACK = 1.010f;   // wheel-centre half-track along project X axis
 static const float CAR_RTRACK = 1.010f;
 static const float CAR_WHEEL_OUTSET = 0.035f; // tyres remain tucked close to the flush arch cladding
 
+// ---------------------------------------------------------------------------
+//  CYBERTRUCK MASTER PROFILE
+//
+//  Every number below was read off the side-elevation reference in
+//  Reference/03_reference_side.png and converted with the published overall
+//  length of 5.683 m.  They are declared ONCE, here, because the hood, the
+//  A-pillar, the roof rail, the sail panel and the glazing all have to meet
+//  exactly - if any of them carried its own copy of a number the panels would
+//  drift apart and the folds would stop lining up.
+//
+//  The single most important property of the real vehicle is that the hood and
+//  the windscreen form ONE almost unbroken straight line from the front bumper
+//  to the roof apex.  The old model had a nearly flat hood (slope 0.09) and
+//  then a steep windscreen (slope 0.42), which is why it read as a generic
+//  angular SUV.  Here the two slopes are 0.319 and 0.325 - visually one line,
+//  with just enough of a crease left at the cowl to catch a highlight.
+// ---------------------------------------------------------------------------
+static const float CT_NOSE_Z     = -2.760f;  // front face of the stainless shell
+static const float CT_COWL_Z     = -1.330f;  // base of the windscreen
+static const float CT_APEX_Z     =  0.110f;  // roof peak - just behind the axle midpoint
+static const float CT_ROOF_R_Z   =  0.520f;  // rear edge of the cab roof (short flat)
+static const float CT_BACKLIGHT_Z=  0.950f;  // bottom of the rear screen
+static const float CT_BED_FRONT_Z=  1.040f;  // front wall of the vault / tonneau
+static const float CT_TAIL_Z     =  2.800f;  // tailgate plane
+
+static const float CT_FLOOR_Y      = 0.300f; // rocker underside at the nose
+static const float CT_FLOOR_REAR_Y = 0.410f; // rocker underside at the tail
+static const float CT_NOSE_TOP_Y   = 0.805f; // top of the front fascia
+// MEASURED OFF THE SIDE REFERENCE.  The real vehicle's hood is STEEPER than
+// its windscreen (slopes 0.394 and 0.311); the project had that inverted
+// (0.319 and 0.366), which left the cowl 144 mm too low.  The visible effect
+// was a long shallow hood with a tall pinched cabin sitting behind it.
+static const float CT_COWL_Y       = 1.370f; // windscreen base
+static const float CT_BELT_Y       = 1.105f; // belt line / bottom of the glazing
+static const float CT_APEX_Y       = 1.790f; // roof apex - the real car is 1.791 m tall
+static const float CT_ROOF_R_Y     = 1.752f;
+static const float CT_BACKLIGHT_Y  = 1.480f;
+static const float CT_BED_RAIL_Y   = 1.255f; // bed rail / tonneau height
+static const float CT_TAIL_BOT_Y   = 0.430f;
+
+static const float CT_X_BODY  = 1.030f;  // half width of the stainless side skin
+static const float CT_X_GLASS = 1.006f;  // side glazing sits ~24 mm inboard
+static const float CT_X_WIND  = 0.996f;  // windscreen / backlight half width
+static const float CT_X_ROOF  = 0.992f;  // roof and tonneau half width
+
+// Daylight opening (the hole the side glass sits in).
+// The greenhouse is short and sits well forward: behind the rear door glass
+// the Cybertruck carries an unusually large stainless sail panel, and getting
+// that proportion right matters more to the silhouette than any other detail.
+static const float CT_DLO_FRONT_Z    = -1.150f; // front bottom corner, on the belt
+static const float CT_DLO_REAR_Z     =  0.760f; // rear bottom corner, on the belt
+static const float CT_DLO_REAR_TOP_Z =  0.480f; // rear top corner, under the roof rail
+static const float CT_B_PILLAR_Z     = -0.230f;
+static const float CT_B_PILLAR_HALF  =  0.028f;
+static const float CT_ROOF_RAIL_T    =  0.088f; // stainless left above the glass
+
+static float ctLerp(float a, float b, float t) { return a + (b - a) * t; }
+
+// ---------------------------------------------------------------------------
+//  The upper silhouette as a single function of z.  Any panel that touches the
+//  roofline reads its height from here, so the hood, pillars, roof rail and
+//  sail can never disagree about where the skin is.
+// ---------------------------------------------------------------------------
+static float ctRoofLineY(float z)
+{
+    if (z <= CT_COWL_Z)
+        return ctLerp(CT_NOSE_TOP_Y, CT_COWL_Y, (z - CT_NOSE_Z) / (CT_COWL_Z - CT_NOSE_Z));
+    if (z <= CT_APEX_Z)
+        return ctLerp(CT_COWL_Y, CT_APEX_Y, (z - CT_COWL_Z) / (CT_APEX_Z - CT_COWL_Z));
+    if (z <= CT_ROOF_R_Z)
+        return ctLerp(CT_APEX_Y, CT_ROOF_R_Y, (z - CT_APEX_Z) / (CT_ROOF_R_Z - CT_APEX_Z));
+    return ctLerp(CT_ROOF_R_Y, CT_BED_RAIL_Y, (z - CT_ROOF_R_Z) / (CT_TAIL_Z - CT_ROOF_R_Z));
+}
+
+// Where the wedge line crosses the belt: forward of this the body top is below
+// the glazing line, so the lower-body panel simply follows the wedge.
+static float ctBeltCrossZ()
+{
+    const float slope = (CT_COWL_Y - CT_NOSE_TOP_Y) / (CT_COWL_Z - CT_NOSE_Z);
+    return CT_NOSE_Z + (CT_BELT_Y - CT_NOSE_TOP_Y) / slope;
+}
+
 // ---- Parking bays along the two side walls -----------------------------------
+// How far the serviced vehicle rolls when it drives out of the bay.  The lift
+// sits at z = -2.0 and the door opening is at z = 13.2, so 17.5 m carries the
+// truck cleanly through the doorway and onto the apron outside.
+static const float CAR_DRIVE_DISTANCE = 17.50f;
+
 static const float PARK_X = 10.60f;  // centre line of a parked car
 static const float PARK_BAY_W = 3.10f;   // bay width  (across the aisle, along Z)
 static const float PARK_BAY_D = 5.60f;   // bay depth  (into the wall, along X)
@@ -598,8 +937,8 @@ static const Vec3 C_JERRY(0.330f, 0.390f, 0.310f);
 // ---- Exterior ------------------------------------------------------------------
 static const Vec3 C_APRON(0.480f, 0.470f, 0.445f);  // sunlit concrete, warm
 static const Vec3 C_APRON_DARK(0.400f, 0.392f, 0.372f);
-static const Vec3 C_ASPHALT(0.265f, 0.265f, 0.272f);
-static const Vec3 C_ASPHALT_PATCH(0.220f, 0.222f, 0.230f);
+static const Vec3 C_ASPHALT(0.105f, 0.108f, 0.116f);      // dark charcoal road, not pure black
+static const Vec3 C_ASPHALT_PATCH(0.073f, 0.078f, 0.086f); // repaired/tarred areas
 static const Vec3 C_KERB(0.560f, 0.552f, 0.528f);
 static const Vec3 C_PERIM_WALL(0.505f, 0.492f, 0.462f);
 static const Vec3 C_BUILDING[3] = {
@@ -657,6 +996,25 @@ void Scene::drawGarage(const Mat4& parent)
 
     // Darker painted service bay under the lift.
     drawCube(parent * place(Vec3(0.0f, 0.012f, LIFT_Z), Vec3(8.4f, 0.02f, 9.0f)), C_FLOOR_BAY, 0.0f, 0.0f, 0.78f, MAT_PAINT);
+
+    // Subtle tyre tracks and scuffs inside the working bay. These are kept
+    // faint so the floor reads as used industrial concrete, not a dirty texture.
+    for (int side = -1; side <= 1; side += 2)
+    {
+        float x = 1.10f * static_cast<float>(side);
+        drawCube(parent * place(Vec3(x, 0.018f, LIFT_Z + 0.20f), Vec3(0.10f, 0.012f, 5.60f)),
+            Vec3(0.105f, 0.107f, 0.112f), 0.0f, 0.0f, 0.94f, MAT_RUBBER);
+        drawCube(parent * place(Vec3(x + 0.12f * static_cast<float>(side), 0.019f, LIFT_Z - 0.55f),
+            Vec3(0.045f, 0.010f, 3.10f), Vec3(0.0f, 2.0f * static_cast<float>(side), 0.0f)),
+            Vec3(0.125f, 0.126f, 0.130f), 0.0f, 0.0f, 0.92f, MAT_RUBBER);
+    }
+    for (int i = 0; i < 7; ++i)
+    {
+        float x = jitter(900 + i * 3, 3.0f);
+        float z = LIFT_Z + jitter(910 + i * 5, 3.5f);
+        drawCube(parent * place(Vec3(x, 0.020f, z), Vec3(0.020f, 0.009f, 0.45f + 0.18f * hash01(920 + i)),
+            Vec3(0.0f, jitter(930 + i, 48.0f), 0.0f)), Vec3(0.31f, 0.315f, 0.325f));
+    }
 
     // Amber outline around that service bay (four thin strips = a rectangle).
     drawCube(parent * place(Vec3(0.0f, 0.02f, LIFT_Z - 4.5f), Vec3(8.4f, 0.02f, 0.12f)), C_PARK_LINE, 0.55f);
@@ -961,113 +1319,174 @@ void Scene::drawGarageDoor(const Mat4& parent, float doorOffset)
 
 void Scene::drawExterior(const Mat4& parent)
 {
+    // ========================================================================
+    //  THE FORECOURT
+    //
+    //  This used to be an open 30 m plaza backed by a row of distant tower
+    //  blocks.  Through a 13 m doorway that read as a bright empty field with
+    //  a skyline floating in it - the scale was wrong and the buildings drew
+    //  the eye straight out of the workshop.
+    //
+    //  It is now an enclosed service forecourt: 20 m wide, walled on both
+    //  sides, with a single through road carrying live traffic across the
+    //  opening.  Everything the camera can see from inside is within 20 m.
+    // ========================================================================
     const float TH = WALL_Z + WALL_T;      // z of the threshold (13.4)
 
-    // ---- 1. The sunlit concrete apron, 14 m deep ---------------------------
+    const float COURT_HALF_W = 10.00f;     // forecourt half width
+    const float APRON_D      =  6.00f;     // apron depth, threshold to kerb
+    const float ROAD_D       =  8.00f;     // carriageway depth
+    const float ROAD_Z       = TH + APRON_D + ROAD_D * 0.5f;   // centre line
+    const float FAR_Z        = TH + APRON_D + ROAD_D;          // far kerb
+
+    // ---- 1. The sunlit concrete apron -------------------------------------
     // Noticeably lighter and warmer than the interior floor: this is the single
     // most important value relationship in the whole shot.
-    drawCube(parent * place(Vec3(0.0f, -0.145f, TH + 7.0f), Vec3(30.0f, 0.30f, 14.0f)), C_APRON, 0.0f, 0.0f, 0.86f, MAT_CONCRETE);
+    drawCube(parent * place(Vec3(0.0f, -0.145f, TH + APRON_D * 0.5f),
+        Vec3(COURT_HALF_W * 2.0f, 0.30f, APRON_D)), C_APRON, 0.0f, 0.0f, 0.86f, MAT_CONCRETE);
 
-    // Expansion joints across it, every 3.5 m, plus two lengthways.
-    for (int i = 0; i < 4; ++i)
-        drawCube(parent * place(Vec3(0.0f, 0.007f, TH + 1.75f + static_cast<float>(i) * 3.5f),
-            Vec3(30.0f, 0.016f, 0.055f)), C_APRON_DARK);
-    drawCube(parent * place(Vec3(-7.5f, 0.007f, TH + 7.0f), Vec3(0.055f, 0.016f, 14.0f)), C_APRON_DARK);
-    drawCube(parent * place(Vec3(7.5f, 0.007f, TH + 7.0f), Vec3(0.055f, 0.016f, 14.0f)), C_APRON_DARK);
+    // Expansion joints, every 2.6 m across plus two lengthways.
+    for (int i = 0; i < 3; ++i)
+        drawCube(parent * place(Vec3(0.0f, 0.007f, TH + 1.6f + static_cast<float>(i) * 2.6f),
+            Vec3(COURT_HALF_W * 2.0f, 0.016f, 0.055f)), C_APRON_DARK);
+    drawCube(parent * place(Vec3(-5.2f, 0.007f, TH + APRON_D * 0.5f), Vec3(0.055f, 0.016f, APRON_D)), C_APRON_DARK);
+    drawCube(parent * place(Vec3(5.2f, 0.007f, TH + APRON_D * 0.5f), Vec3(0.055f, 0.016f, APRON_D)), C_APRON_DARK);
 
     // Patches of staining and old repairs, so it is not a clean slab.
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 6; ++i)
     {
-        float x = jitter(i * 5 + 1, 11.0f);
-        float z = TH + 2.0f + hash01(i * 5 + 2) * 11.0f;
-        float w = 1.1f + hash01(i * 5 + 3) * 2.2f;
+        float x = jitter(i * 5 + 1, 8.0f);
+        float z = TH + 1.4f + hash01(i * 5 + 2) * 6.0f;
+        float w = 1.0f + hash01(i * 5 + 3) * 1.8f;
         drawCube(parent * place(Vec3(x, 0.006f, z), Vec3(w, 0.014f, w * 0.72f),
             Vec3(0.0f, jitter(i * 5 + 4, 40.0f), 0.0f)), C_APRON_DARK * (0.90f + hash01(i * 5) * 0.12f));
     }
 
-    // ---- 2. Approach markings, faded -------------------------------------
-    // A stop line and three arrows pointing at the door.
-    drawCube(parent * place(Vec3(0.0f, 0.012f, TH + 2.30f), Vec3(12.0f, 0.020f, 0.190f)), C_WHITE_LINE * 0.88f);
+    // ---- 2. Approach markings, faded --------------------------------------
+    drawCube(parent * place(Vec3(0.0f, 0.012f, TH + 2.10f), Vec3(11.0f, 0.020f, 0.190f)), C_WHITE_LINE * 0.88f);
     for (int i = 0; i < 3; ++i)
     {
-        float x = (static_cast<float>(i) - 1.0f) * 3.4f;
-        float z = TH + 5.2f;
+        float x = (static_cast<float>(i) - 1.0f) * 3.2f;
+        float z = TH + 4.5f;
         drawCube(parent * place(Vec3(x, 0.012f, z), Vec3(0.230f, 0.020f, 1.55f)), C_WHITE_LINE * 0.80f);
-        // The head: two bars swept BACK from the tip, not forward past it.
         drawCube(parent * place(Vec3(x - 0.255f, 0.012f, z - 0.500f), Vec3(0.220f, 0.020f, 0.760f), Vec3(0.0f, 40.0f, 0.0f)), C_WHITE_LINE * 0.80f);
         drawCube(parent * place(Vec3(x + 0.255f, 0.012f, z - 0.500f), Vec3(0.220f, 0.020f, 0.760f), Vec3(0.0f, -40.0f, 0.0f)), C_WHITE_LINE * 0.80f);
     }
-    // Hatched no-parking zone right at the threshold.
-    for (int i = 0; i < 9; ++i)
-        drawCube(parent * place(Vec3(-5.6f + static_cast<float>(i) * 1.4f, 0.011f, TH + 1.05f),
-            Vec3(0.130f, 0.018f, 1.65f), Vec3(0.0f, 34.0f, 0.0f)), C_WHITE_LINE * 0.72f);
+    for (int i = 0; i < 8; ++i)
+        drawCube(parent * place(Vec3(-4.9f + static_cast<float>(i) * 1.4f, 0.011f, TH + 1.00f),
+            Vec3(0.130f, 0.018f, 1.55f), Vec3(0.0f, 34.0f, 0.0f)), C_WHITE_LINE * 0.72f);
 
-    // ---- 3. Kerb and drainage along the far edge of the apron -------------
-    drawCube(parent * place(Vec3(0.0f, 0.075f, TH + 14.0f), Vec3(30.0f, 0.150f, 0.300f)), C_KERB);
-    for (int i = 0; i < 5; ++i)
+    // ---- 3. Kerb and gullies at the edge of the apron ----------------------
+    drawCube(parent * place(Vec3(0.0f, 0.075f, TH + APRON_D), Vec3(COURT_HALF_W * 2.0f, 0.150f, 0.300f)), C_KERB);
+    for (int i = 0; i < 3; ++i)
     {
-        float x = -10.0f + static_cast<float>(i) * 5.0f;
-        drawCube(parent * place(Vec3(x, 0.020f, TH + 13.55f), Vec3(0.780f, 0.040f, 0.420f)), C_GALV * 0.80f);
+        float x = -6.0f + static_cast<float>(i) * 6.0f;
+        drawCube(parent * place(Vec3(x, 0.020f, TH + APRON_D - 0.45f), Vec3(0.780f, 0.040f, 0.420f)), C_GALV * 0.80f);
         for (int b = 0; b < 5; ++b)
-            drawCube(parent * place(Vec3(x - 0.30f + static_cast<float>(b) * 0.15f, 0.034f, TH + 13.55f),
+            drawCube(parent * place(Vec3(x - 0.30f + static_cast<float>(b) * 0.15f, 0.034f, TH + APRON_D - 0.45f),
                 Vec3(0.055f, 0.030f, 0.420f)), C_GALV);
     }
 
-    // ---- 4. Asphalt road beyond the kerb -----------------------------------
-    drawCube(parent * place(Vec3(0.0f, -0.16f, TH + 22.5f), Vec3(46.0f, 0.30f, 17.0f)), C_ASPHALT, 0.0f, 0.0f, 0.97f, MAT_ASPHALT);
-    for (int i = 0; i < 6; ++i)
+    // ---- 4. The through road -----------------------------------------------
+    drawCube(parent * place(Vec3(0.0f, -0.16f, ROAD_Z),
+        Vec3(COURT_HALF_W * 2.0f + 4.0f, 0.30f, ROAD_D)), C_ASPHALT, 0.0f, 0.0f, 0.97f, MAT_ASPHALT);
+
+    for (int i = 0; i < 5; ++i)
     {
-        float x = jitter(i * 9 + 1, 16.0f);
-        float z = TH + 16.0f + hash01(i * 9 + 2) * 13.0f;
-        drawCube(parent * place(Vec3(x, 0.004f, z), Vec3(2.2f + hash01(i * 9) * 2.5f, 0.012f, 1.5f + hash01(i * 9 + 3) * 2.0f),
-            Vec3(0.0f, jitter(i * 9 + 4, 30.0f), 0.0f)), C_ASPHALT_PATCH);
+        float x = jitter(i * 9 + 1, 9.0f);
+        float z = ROAD_Z + jitter(i * 9 + 2, 3.2f);
+        drawCube(parent * place(Vec3(x, 0.004f, z), Vec3(1.8f + hash01(i * 9) * 2.0f, 0.012f, 1.3f + hash01(i * 9 + 3) * 1.5f),
+            Vec3(0.0f, jitter(i * 9 + 4, 30.0f), 0.0f)), C_ASPHALT_PATCH, 0.0f, 0.0f, 0.98f, MAT_ASPHALT);
     }
-    // Lane line down the road.
-    for (int i = 0; i < 7; ++i)
-        drawCube(parent * place(Vec3(-16.0f + static_cast<float>(i) * 5.4f, 0.010f, TH + 22.0f),
-            Vec3(2.40f, 0.018f, 0.180f)), C_WHITE_LINE * 0.70f);
+    for (int i = 0; i < 20; ++i)
+    {
+        float x = jitter(700 + i * 5, 11.0f);
+        float z = ROAD_Z + jitter(710 + i * 7, 3.8f);
+        float sz = 0.035f + hash01(720 + i * 11) * 0.075f;
+        Vec3 stone = (i % 3 == 0) ? Vec3(0.18f, 0.18f, 0.19f) : Vec3(0.135f, 0.138f, 0.145f);
+        drawCube(parent * place(Vec3(x, 0.009f, z), Vec3(sz, 0.012f, sz * 0.70f),
+            Vec3(0.0f, jitter(730 + i, 60.0f), 0.0f)), stone, 0.0f, 0.0f, 0.94f, MAT_ASPHALT);
+    }
 
-    // ---- 5. Perimeter wall, 15 m out ---------------------------------------
-    drawCube(parent * place(Vec3(0.0f, 1.00f, TH + 31.5f), Vec3(48.0f, 2.00f, 0.300f)), C_PERIM_WALL, 0.0f, 0.0f, 0.88f, MAT_CONCRETE);
-    drawCube(parent * place(Vec3(0.0f, 2.06f, TH + 31.5f), Vec3(48.0f, 0.120f, 0.420f)), C_PERIM_WALL * 1.10f); // coping
-    for (int i = 0; i < 13; ++i)                                                                                  // posts
-        drawCube(parent * place(Vec3(-24.0f + static_cast<float>(i) * 4.0f, 1.12f, TH + 31.5f),
-            Vec3(0.420f, 2.24f, 0.460f)), C_PERIM_WALL * 1.06f);
-
-    // ---- 6. Distant skyline -------------------------------------------------
-    // Nine plain boxes at varying heights and distances. Each one further back
-    // is nudged toward the sky colour, which is what reads as haze and is what
-    // makes 40 m look like 400.
-    const Vec3 SKY(0.560f, 0.610f, 0.680f);
+    // Centre line, dashed, running the length of the carriageway.
     for (int i = 0; i < 9; ++i)
+        drawCube(parent * place(Vec3(-11.2f + static_cast<float>(i) * 2.8f, 0.010f, ROAD_Z),
+            Vec3(1.40f, 0.018f, 0.160f)), C_WHITE_LINE * 0.70f);
+    // Edge lines.
+    drawCube(parent * place(Vec3(0.0f, 0.010f, ROAD_Z - ROAD_D * 0.5f + 0.45f),
+        Vec3(COURT_HALF_W * 2.0f + 3.0f, 0.016f, 0.120f)), C_WHITE_LINE * 0.55f);
+    drawCube(parent * place(Vec3(0.0f, 0.010f, ROAD_Z + ROAD_D * 0.5f - 0.45f),
+        Vec3(COURT_HALF_W * 2.0f + 3.0f, 0.016f, 0.120f)), C_WHITE_LINE * 0.55f);
+
+    // Far kerb.
+    drawCube(parent * place(Vec3(0.0f, 0.075f, FAR_Z), Vec3(COURT_HALF_W * 2.0f + 4.0f, 0.150f, 0.300f)), C_KERB);
+
+    // ---- 5. The walls that close the forecourt in ---------------------------
+    // Side walls run from the building line out to the back wall, so the
+    // opening frames a contained yard instead of an open field.
+    for (int side = -1; side <= 1; side += 2)
     {
-        float x = -26.0f + static_cast<float>(i) * 6.5f + jitter(i * 11, 2.0f);
-        float depth = 42.0f + hash01(i * 11 + 1) * 34.0f;
-        float h = 6.0f + hash01(i * 11 + 2) * 13.0f;
-        float w = 5.5f + hash01(i * 11 + 3) * 5.0f;
-
-        // Haze: blend the building toward the sky in proportion to distance.
-        float t = (depth - 42.0f) / 34.0f * 0.55f + 0.22f;
-        Vec3 base = C_BUILDING[i % 3];
-        Vec3 c = base * (1.0f - t) + SKY * t;
-
-        drawCube(parent * place(Vec3(x, h * 0.5f, TH + depth), Vec3(w, h, w * 0.85f)), c);
-        // A roof plant box, so the silhouette is not a plain rectangle.
-        drawCube(parent * place(Vec3(x + w * 0.22f, h + 0.55f, TH + depth), Vec3(w * 0.34f, 1.10f, w * 0.34f)), c * 1.04f);
-        // Window bands, barely visible through the haze but they break the mass.
-        for (int r = 0; r < 4; ++r)
-            drawCube(parent * place(Vec3(x, h * (0.25f + static_cast<float>(r) * 0.18f), TH + depth - w * 0.43f),
-                Vec3(w * 0.86f, 0.30f, 0.06f)), c * 0.90f);
+        const float sx = static_cast<float>(side) * COURT_HALF_W;
+        drawCube(parent * place(Vec3(sx, 1.35f, TH + APRON_D * 0.5f),
+            Vec3(0.300f, 2.70f, APRON_D)), C_PERIM_WALL, 0.0f, 0.0f, 0.88f, MAT_CONCRETE);
+        drawCube(parent * place(Vec3(sx, 2.76f, TH + APRON_D * 0.5f),
+            Vec3(0.420f, 0.120f, APRON_D)), C_PERIM_WALL * 1.10f);          // coping
+        for (int i = 0; i < 3; ++i)
+            drawCube(parent * place(Vec3(sx, 1.45f, TH + 1.2f + static_cast<float>(i) * 3.0f),
+                Vec3(0.440f, 2.90f, 0.420f)), C_PERIM_WALL * 1.06f);        // piers
     }
 
-    // ---- 7. Light columns along the road ------------------------------------
-    for (int i = 0; i < 4; ++i)
+    // Back wall behind the road.
+    drawCube(parent * place(Vec3(0.0f, 1.20f, FAR_Z + 1.60f),
+        Vec3(COURT_HALF_W * 2.0f + 5.0f, 2.40f, 0.300f)), C_PERIM_WALL, 0.0f, 0.0f, 0.88f, MAT_CONCRETE);
+    drawCube(parent * place(Vec3(0.0f, 2.46f, FAR_Z + 1.60f),
+        Vec3(COURT_HALF_W * 2.0f + 5.0f, 0.120f, 0.420f)), C_PERIM_WALL * 1.10f);
+    for (int i = 0; i < 7; ++i)
+        drawCube(parent * place(Vec3(-10.5f + static_cast<float>(i) * 3.5f, 1.32f, FAR_Z + 1.60f),
+            Vec3(0.420f, 2.64f, 0.460f)), C_PERIM_WALL * 1.06f);
+
+    // ---- 6. Sky backdrop -----------------------------------------------------
+    //  With the tower blocks removed there was nothing behind the perimeter
+    //  wall but the clear colour, so the doorway framed a black rectangle and
+    //  the brightly sunlit apron in front of it made no sense.
+    //
+    //  This is a banded backdrop standing well beyond the wall: emissive, so
+    //  it is unaffected by the workshop lighting, and graded from a warm pale
+    //  horizon up to a cooler zenith.  Six flat bands are enough - only a strip
+    //  of it is ever visible above the wall through the opening.
     {
-        float x = -15.0f + static_cast<float>(i) * 10.0f;
-        Mat4 pole = parent * translate(x, 0.0f, TH + 30.2f);
-        drawCylS(pole * place(Vec3(0.0f, 2.70f, 0.0f), Vec3(0.180f, 5.40f, 0.180f)), C_PERIM_WALL * 0.80f);
-        drawCylS(pole * translate(0.0f, 5.30f, -0.55f) * rotateX(72.0f) * scale(0.140f, 1.30f, 0.140f), C_PERIM_WALL * 0.80f);
-        drawCube(pole * place(Vec3(0.0f, 5.66f, -1.15f), Vec3(0.520f, 0.140f, 0.900f)), C_GALV * 0.85f);
+        const float skyZ = FAR_Z + 16.0f;
+        const float skyW = 78.0f;
+        const Vec3 horizon(0.600f, 0.670f, 0.760f);
+        const Vec3 zenith (0.235f, 0.390f, 0.670f);
+        // Only the lowest few metres of sky are ever visible through the door,
+        // so the gradient is compressed into short bands rather than spread
+        // over a full sky dome where it would never be seen.
+        // Enough bands that the step between them falls below the threshold
+        // the eye can pick out of a smooth sky after tone mapping.
+        const int bands = 26;
+        const float bandH = 1.05f;
+        for (int i = 0; i < bands; ++i)
+        {
+            const float t = static_cast<float>(i) / static_cast<float>(bands - 1);
+            const Vec3 c = horizon * (1.0f - t) + zenith * t;
+            drawCube(parent * place(Vec3(0.0f, 0.30f + bandH * (static_cast<float>(i) + 0.5f), skyZ),
+                Vec3(skyW, bandH + 0.03f, 0.40f)), c, 0.26f, 0.0f, 1.0f, MAT_SKY);
+        }
+        // A low haze band that softens where the ground meets the sky.
+        drawCube(parent * place(Vec3(0.0f, 0.55f, skyZ - 0.45f),
+            Vec3(skyW, 1.10f, 0.30f)), horizon * 1.10f, 0.32f, 0.0f, 1.0f, MAT_SKY);
+    }
+
+    // ---- 7. Two street lights over the road ---------------------------------
+    for (int i = 0; i < 2; ++i)
+    {
+        float x = (i == 0) ? -8.0f : 8.0f;
+        Mat4 pole = parent * translate(x, 0.0f, FAR_Z + 1.05f);
+        drawCylS(pole * place(Vec3(0.0f, 2.40f, 0.0f), Vec3(0.160f, 4.80f, 0.160f)), C_PERIM_WALL * 0.80f);
+        drawCylS(pole * translate(0.0f, 4.72f, -0.50f) * rotateX(72.0f) * scale(0.130f, 1.20f, 0.130f), C_PERIM_WALL * 0.80f);
+        drawCube(pole * place(Vec3(0.0f, 5.05f, -1.05f), Vec3(0.480f, 0.140f, 0.840f)), C_GALV * 0.85f);
+        drawCube(pole * place(Vec3(0.0f, 4.96f, -1.05f), Vec3(0.400f, 0.040f, 0.740f)), C_LAMP_LIGHT, 0.85f);
     }
 }
 
@@ -1324,8 +1743,11 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
             Vec3(0.88f, LIFT_PLAT_T, LIFT_PAD_L)), C_LIFT_BLUE);
 
         // Yellow runway pad on top of it - the surface the tyres stand on.
+        // The runway is a yellow-painted steel non-slip plate, so it gets
+        // the tread layer of the material texture array.
         drawCube(lift * place(Vec3(x, padY + LIFT_PAD_T * 0.5f, 0.0f),
-            Vec3(1.00f, LIFT_PAD_T, LIFT_PAD_L)), C_LIFT_YELLOW);
+            Vec3(1.00f, LIFT_PAD_T, LIFT_PAD_L)), C_LIFT_YELLOW,
+            0.0f, 0.55f, 0.46f, MAT_TREAD);
 
         // Raised lip along the outer edge so a wheel cannot roll off.
         drawCube(lift * place(Vec3(x + sx * 0.46f, topY + 0.045f, 0.0f),
@@ -1338,9 +1760,11 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
         // Drive-on ramps, hinged at each end and sloping back down to the floor.
         // rotateX(+9) drops the +Z end, rotateX(-9) drops the -Z end.
         drawCube(lift * place(Vec3(x, topY - 0.06f, LIFT_PAD_L * 0.5f + 0.52f),
-            Vec3(1.00f, 0.08f, 1.10f), Vec3(9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW);
+            Vec3(1.00f, 0.08f, 1.10f), Vec3(9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW,
+            0.0f, 0.55f, 0.46f, MAT_TREAD);
         drawCube(lift * place(Vec3(x, topY - 0.06f, -(LIFT_PAD_L * 0.5f + 0.52f)),
-            Vec3(1.00f, 0.08f, 1.10f), Vec3(-9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW);
+            Vec3(1.00f, 0.08f, 1.10f), Vec3(-9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW,
+            0.0f, 0.55f, 0.46f, MAT_TREAD);
 
         // Dark grip strips across the pad - set nearly flush so they read as
         // pressed diamond-plate texture rather than separate floating bars.
@@ -1377,9 +1801,14 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
 //  the brake disc and caliper sit on the INBOARD side where they belong.
 // ============================================================================
 
-void Scene::drawWheel(const Mat4& parent, const Vec3& localPos, float radius, float width, float outward)
+void Scene::drawWheel(const Mat4& parent, const Vec3& localPos, float radius, float width,
+                     float outward, float spinDeg)
 {
-    Mat4 hub = parent * translate(localPos) * rotateZ(90.0f);
+    // rotateZ(90) lays the cylinder on its side so its axis is the axle; the
+    // extra rotateY then spins the whole wheel about that axle.  Putting the
+    // spin here means tread blocks, aero cover and brake disc all turn
+    // together, because every one of them is built in this frame.
+    Mat4 hub = parent * translate(localPos) * rotateZ(90.0f) * rotateY(spinDeg);
     const float D = radius * 2.0f;
     const float s = outward;
 
@@ -1412,32 +1841,56 @@ void Scene::drawWheel(const Mat4& parent, const Vec3& localPos, float radius, fl
                  C_TIRE * 0.82f, 0.0f, 0.0f, 0.98f, MAT_TIRE);
     }
 
-    // Production-style wheel face: a shallow, nearly flush black aero cover.
-    // The cover hides most of the deep rim/brake geometry so the wheel reads as
-    // a flat polygonal assembly rather than a conventional sports-car wheel.
-    drawCylS(hub * translate(0.0f, s * width * 0.478f, 0.0f)
-        * scale(D * 0.790f, width * 0.032f, D * 0.790f),
-        C_RIM, 0.0f, 0.12f, 0.48f, MAT_CARBON);
-    drawCylS(hub * translate(0.0f, s * width * 0.497f, 0.0f)
-        * scale(D * 0.690f, width * 0.018f, D * 0.690f),
-        C_CARBON * 0.78f, 0.0f, 0.08f, 0.55f, MAT_CARBON);
+    // ---------------------------------------------------------------------
+    //  PRODUCTION AERO COVER
+    //
+    //  The reference wheel is a satin-black dish with a raised outer ring and
+    //  seven broad, flat-topped spokes standing proud of a recessed web.  The
+    //  earlier version made the spokes 12 mm deep, which from any distance
+    //  collapsed into one featureless disc, and shaded the whole assembly as
+    //  carbon composite - so the face came out looking like woven fabric.
+    //  It is moulded and painted, so it is shaded as painted metal.
+    // ---------------------------------------------------------------------
+    //  The reference wheel is not black: the cover is a mid-grey moulding sunk
+    //  into a near-black web, and it is that CONTRAST that makes the spokes
+    //  visible at a distance.  C_RIM alone (0.11) is too dark to separate.
+    const Vec3 coverDark  = Vec3(0.062f, 0.065f, 0.072f);
+    const Vec3 coverSpoke = Vec3(0.232f, 0.240f, 0.258f);
+    const Vec3 coverRing  = Vec3(0.330f, 0.340f, 0.360f);
 
-    // Seven broad angular cover blades.  Their very small depth is intentional:
-    // in side view they merge into one flat black polygonal aero cover.
+    // Recessed web, sitting back from the rim face.
+    drawCylS(hub * translate(0.0f, s * width * 0.455f, 0.0f)
+        * scale(D * 0.775f, width * 0.030f, D * 0.775f),
+        coverDark, 0.0f, 0.20f, 0.56f, MAT_PAINTED_METAL);
+
+    // Raised outer ring - the bright edge that defines the wheel's circle.
+    drawCylS(hub * translate(0.0f, s * width * 0.498f, 0.0f)
+        * scale(D * 0.800f, width * 0.052f, D * 0.800f),
+        coverRing, 0.0f, 0.45f, 0.36f, MAT_PAINTED_METAL);
+    drawCylS(hub * translate(0.0f, s * width * 0.502f, 0.0f)
+        * scale(D * 0.735f, width * 0.050f, D * 0.735f),
+        coverDark * 0.90f, 0.0f, 0.18f, 0.58f, MAT_PAINTED_METAL);
+
+    // Seven broad flat-topped spokes, each tapering towards the hub.
     for (int i = 0; i < 7; ++i)
     {
-        Mat4 blade = hub * translate(0.0f, s * width * 0.510f, 0.0f)
+        Mat4 blade = hub * translate(0.0f, s * width * 0.480f, 0.0f)
             * rotateY(static_cast<float>(i) * (360.0f / 7.0f));
-        drawCube(blade * translate(D * 0.205f, 0.0f, 0.0f)
-            * rotateY(8.0f)
-            * scale(D * 0.255f, width * 0.012f, D * 0.105f),
-            C_RIM * 0.82f, 0.0f, 0.10f, 0.50f, MAT_CARBON);
+        drawCube(blade * translate(D * 0.255f, 0.0f, 0.0f)
+            * scale(D * 0.300f, width * 0.044f, D * 0.150f),
+            coverSpoke, 0.0f, 0.35f, 0.44f, MAT_PAINTED_METAL);
+        drawCube(blade * translate(D * 0.130f, 0.0f, 0.0f)
+            * scale(D * 0.180f, width * 0.042f, D * 0.098f),
+            coverSpoke * 0.86f, 0.0f, 0.32f, 0.48f, MAT_PAINTED_METAL);
     }
 
-    // Small flush centre cap; lug hardware is intentionally suppressed.
-    drawCylS(hub * translate(0.0f, s * width * 0.520f, 0.0f)
-        * scale(D * 0.205f, width * 0.018f, D * 0.205f),
-        C_RIM * 0.72f, 0.0f, 0.10f, 0.44f, MAT_CARBON);
+    // Centre cap with a machined lip.
+    drawCylS(hub * translate(0.0f, s * width * 0.515f, 0.0f)
+        * scale(D * 0.225f, width * 0.040f, D * 0.225f),
+        coverSpoke * 0.78f, 0.0f, 0.40f, 0.42f, MAT_PAINTED_METAL);
+    drawCylS(hub * translate(0.0f, s * width * 0.530f, 0.0f)
+        * scale(D * 0.150f, width * 0.028f, D * 0.150f),
+        coverRing * 1.15f, 0.0f, 0.60f, 0.28f, MAT_PAINTED_METAL);
 
     // Brake disc remains physically present inboard but is mostly occluded by
     // the production aero cover, matching the reference vehicle.
@@ -1471,6 +1924,10 @@ namespace
         int count = 0;
     };
 
+    // The side skin is its OWN batch.  That is what lets the robot polish the
+    // doors and quarter panels while the hood, roof and tailgate keep their
+    // factory finish - one mesh, two surface finishes, in the same frame.
+    static TruckMeshBatch gTruckSideMesh;
     static TruckMeshBatch gTruckBodyMesh;
     static TruckMeshBatch gTruckGlassMesh;
     static TruckMeshBatch gTruckDarkTopMesh;
@@ -1481,6 +1938,8 @@ namespace
     static TruckMeshBatch gTruckRearLightMesh;
     static TruckMeshBatch gTruckMirrorHousingMesh;
     static TruckMeshBatch gTruckMirrorGlassMesh;
+    static TruckMeshBatch gTruckLightRecessMesh;
+    static TruckMeshBatch gTruckFasciaMesh;
     static bool gTruckMeshReady = false;
 
     static void truckPushVertex(std::vector<float>& out, const Vec3& p, const Vec3& n)
@@ -1532,6 +1991,67 @@ namespace
         truckPushTriN(out, a, b, c, n);
     }
 
+    // ---------------------------------------------------------------------
+    //  A STAMPED FOLD RADIUS.
+    //
+    //  Two narrow strips meeting at a crest that stands a fraction of a
+    //  millimetre proud of the two faces sharing the edge.  Every folded steel
+    //  panel in the world has this radius; without it a facet junction is a
+    //  mathematically perfect corner that light simply slides over, and the
+    //  body lines disappear.  With it, each fold catches a bright specular
+    //  line - which is exactly what makes the real vehicle's panel work read
+    //  as deliberate rather than accidental.
+    // ---------------------------------------------------------------------
+    static void truckPushFoldRib(std::vector<float>& out,
+                                 const Vec3& p0, const Vec3& p1,
+                                 const Vec3& nA, const Vec3& nB,
+                                 float width, float lift)
+    {
+        Vec3 t = p1 - p0;
+        if (dot(t, t) < 1e-9f) return;
+        t = normalize(t);
+        Vec3 bis = normalize(nA + nB);
+
+        // In-plane directions that point AWAY from the opposite face.
+        Vec3 dA = normalize(cross(nA, t));
+        if (dot(dA, nB) > 0.0f) dA = -dA;
+        Vec3 dB = normalize(cross(nB, t));
+        if (dot(dB, nA) > 0.0f) dB = -dB;
+
+        const Vec3 a0 = p0 + dA * width + nA * (lift * 0.25f);
+        const Vec3 a1 = p1 + dA * width + nA * (lift * 0.25f);
+        const Vec3 b0 = p0 + dB * width + nB * (lift * 0.25f);
+        const Vec3 b1 = p1 + dB * width + nB * (lift * 0.25f);
+        const Vec3 c0 = p0 + bis * lift;
+        const Vec3 c1 = p1 + bis * lift;
+
+        truckPushQuadAuto(out, a0, a1, c1, c0, normalize(nA + bis));
+        truckPushQuadAuto(out, c0, c1, b1, b0, normalize(nB + bis));
+    }
+
+    // One flat panel of the side skin, given as an outline in the (z, y)
+    // plane.  The outlines used below are all convex, so a simple triangle fan
+    // is exact.  The explicit side normal also fixes the winding, so a caller
+    // only has to list the outline once and both sides come out right.
+    struct CtProfilePoint { float z; float y; };
+
+    static void truckPushSidePanel(std::vector<float>& out, int side,
+                                   const CtProfilePoint* pts, int count)
+    {
+        if (count < 3) return;
+        const float sx = static_cast<float>(side);
+        const float x = sx * CT_X_BODY;
+        const Vec3 n(sx, 0.0f, 0.0f);
+        for (int i = 1; i + 1 < count; ++i)
+        {
+            const Vec3 a(x, pts[0].y,     pts[0].z);
+            const Vec3 b(x, pts[i].y,     pts[i].z);
+            const Vec3 c(x, pts[i + 1].y, pts[i + 1].z);
+            if (sx > 0.0f) truckPushTriN(out, a, b, c, n);
+            else           truckPushTriN(out, a, c, b, n);
+        }
+    }
+
     // Closed cuboid made from six quads.  Used for the physical front/rear
     // bumper blocks instead of the old single flat strip.
     static void truckPushBox(std::vector<float>& out,
@@ -1570,31 +2090,44 @@ namespace
                                          float wheelRadius)
     {
         const float sx = static_cast<float>(side);
-        // Keep the cladding almost flush with the stainless side skin.  The
-        // older 136 mm extrusion looked aftermarket-heavy; production cladding
-        // is a much thinner geometric lip.
-        const float xInner = sx * 1.047f;
-        const float xOuter = sx * 1.098f;
+        // Production cladding is a chunky black lip that stands ~88 mm proud of
+        // the stainless skin and sits almost flush with the tyre shoulder.  Any
+        // thinner and the arches stop reading as the heavy protective trim they
+        // are on the real vehicle.
+        const float xInner = sx * (CT_X_BODY + 0.002f);
+        const float xOuter = sx * (CT_X_BODY + 0.088f);
         const Vec3 nSide(sx, 0.0f, 0.0f);
 
         struct YZ { float y; float z; };
 
         // Six vertices produce exactly FIVE straight visible segments.
+        //
+        //  `outer` is the top silhouette of the cladding; `inner` is the wheel
+        //  opening it frames.  The gap between them is the visible width of the
+        //  black trim, and that is what was wrong before: the two rings were
+        //  only 28 mm apart, so from any normal distance the cladding read as a
+        //  thin pencil outline rather than the heavy protective band on the
+        //  real vehicle.  They are now ~95 mm apart at the crown.
+        //
+        //  The inner ring still has to clear the tyre, whose top is exactly
+        //  `wheelRadius` above the axle, so the opening is kept at +0.505 and
+        //  the outer edge raised to +0.600 instead - which puts the crown just
+        //  under the belt line at 1.105, matching the reference photographs.
         const YZ outer[6] = {
-            { wheelRadius + 0.020f, -0.648f },
-            { wheelRadius + 0.318f, -0.548f },
-            { wheelRadius + 0.548f, -0.320f },
-            { wheelRadius + 0.548f,  0.320f },
-            { wheelRadius + 0.318f,  0.548f },
-            { wheelRadius + 0.020f,  0.648f }
+            { wheelRadius + 0.020f, -0.680f },
+            { wheelRadius + 0.330f, -0.580f },
+            { wheelRadius + 0.600f, -0.335f },
+            { wheelRadius + 0.600f,  0.335f },
+            { wheelRadius + 0.330f,  0.580f },
+            { wheelRadius + 0.020f,  0.680f }
         };
         const YZ inner[6] = {
-            { wheelRadius + 0.018f, -0.615f },
-            { wheelRadius + 0.292f, -0.520f },
-            { wheelRadius + 0.520f, -0.302f },
-            { wheelRadius + 0.520f,  0.302f },
-            { wheelRadius + 0.292f,  0.520f },
-            { wheelRadius + 0.018f,  0.615f }
+            { wheelRadius + 0.015f, -0.560f },
+            { wheelRadius + 0.280f, -0.475f },
+            { wheelRadius + 0.505f, -0.268f },
+            { wheelRadius + 0.505f,  0.268f },
+            { wheelRadius + 0.280f,  0.475f },
+            { wheelRadius + 0.015f,  0.560f }
         };
 
         for (int i = 0; i < 5; ++i)
@@ -1665,7 +2198,8 @@ namespace
     {
         if (gTruckMeshReady) return;
 
-        std::vector<float> body;
+        std::vector<float> sides;      // the two side skins - polishable
+        std::vector<float> body;       // hood, fascia, tailgate, floor pan
         std::vector<float> glass;
         std::vector<float> darkTop;
         std::vector<float> trim;
@@ -1673,242 +2207,472 @@ namespace
         std::vector<float> bumpers;
         std::vector<float> frontLight;
         std::vector<float> rearLight;
+        std::vector<float> lightRecess;
+        std::vector<float> fascia;
         std::vector<float> mirrorHousing;
         std::vector<float> mirrorGlass;
 
         // Project vehicle axes: X = width, Y = up, Z = length, nose toward -Z.
-        // The proportions below are deliberately wider/taller/heavier than V2.
-        const float xBody  = 1.055f;
-        // The greenhouse is almost flush with the stainless shell.  Keeping
-        // only a ~25-35 mm step avoids the deeply recessed "toy window" look.
-        const float xGlass = 1.025f;
-        const float xWind  = 1.010f;
+        const float xB = CT_X_BODY;
+        const float xG = CT_X_GLASS;
+        const float xW = CT_X_WIND;
+        const float xR = CT_X_ROOF;
 
-        const float zFrontBottom = -2.700f;
-        const float zFrontTop    = -2.625f;
-        const float zCowl        = -1.405f;
-        // The roof peak belongs near the B-pillar, not over the front seats.
-        // Moving it rearward lengthens and shallows the single windscreen slope.
-        const float zRoofApex    =  0.090f;
-        const float zRoofRear    =  0.785f;
-        const float zRearGlass   =  1.075f;
-        const float zTailTop     =  2.575f;
-        const float zTailBottom  =  2.690f;
+        const float zBeltCross = ctBeltCrossZ();
+        const float zBpF = CT_B_PILLAR_Z - CT_B_PILLAR_HALF;
+        const float zBpR = CT_B_PILLAR_Z + CT_B_PILLAR_HALF;
 
-        const float yBottom      = 0.300f;
-        const float yFrontTop    = 0.980f;
-        const float yCowl        = 1.090f;
-        const float ySill        = 1.105f;
-        const float yRoofApex    = 1.720f;
-        const float yRoofRear    = 1.655f;
-        const float yRearGlass   = 1.225f;
-        const float yTailTop     = 1.290f;
-        const float yTailBottom  = 0.405f;
+        // Height of the glass top edge: the roofline less the stainless rail.
+        auto dloTopY = [](float z) { return ctRoofLineY(z) - CT_ROOF_RAIL_T; };
 
-        // -----------------------------------------------------------------
-        // STAINLESS BODY - broad clean planes, not stair-stepped cubes.
-        // -----------------------------------------------------------------
+        // ------------------------------------------------------------------
+        //  SIDE SKIN
+        //
+        //  The whole flank is one continuous stainless sheet with the daylight
+        //  opening cut out of it.  It is emitted as six convex sub-panels so
+        //  that a plain triangle fan is exact everywhere:
+        //
+        //      R1  lower body  - rocker to belt line, nose to tail
+        //      R2  front wing  - belt to roofline, ahead of the B-pillar
+        //      R3  B-pillar    - the narrow full-height strip
+        //      R4  roof rail   - the stainless left above the glass
+        //      R5  sail panel  - C-pillar blending into the bed side
+        // ------------------------------------------------------------------
+        for (int side = -1; side <= 1; side += 2)
+        {
+            const CtProfilePoint R1[5] = {
+                { CT_NOSE_Z,  CT_NOSE_TOP_Y },
+                { zBeltCross, CT_BELT_Y },
+                { CT_TAIL_Z,  CT_BELT_Y },
+                { CT_TAIL_Z,  CT_TAIL_BOT_Y },
+                { CT_NOSE_Z,  CT_FLOOR_Y }
+            };
+            truckPushSidePanel(sides, side, R1, 5);
+
+            const CtProfilePoint R2[5] = {
+                { zBeltCross,     CT_BELT_Y },
+                { CT_DLO_FRONT_Z, CT_BELT_Y },
+                { zBpF,           dloTopY(zBpF) },
+                { zBpF,           ctRoofLineY(zBpF) },
+                { CT_COWL_Z,      CT_COWL_Y }
+            };
+            truckPushSidePanel(sides, side, R2, 5);
+
+            const CtProfilePoint R3[4] = {
+                { zBpF, CT_BELT_Y },
+                { zBpR, CT_BELT_Y },
+                { zBpR, ctRoofLineY(zBpR) },
+                { zBpF, ctRoofLineY(zBpF) }
+            };
+            truckPushSidePanel(sides, side, R3, 4);
+
+            // The rail is split at the apex so no fan ever crosses the kink.
+            const CtProfilePoint R4a[4] = {
+                { zBpR,      ctRoofLineY(zBpR) },
+                { CT_APEX_Z, CT_APEX_Y },
+                { CT_APEX_Z, dloTopY(CT_APEX_Z) },
+                { zBpR,      dloTopY(zBpR) }
+            };
+            truckPushSidePanel(sides, side, R4a, 4);
+
+            const CtProfilePoint R4b[4] = {
+                { CT_APEX_Z,         CT_APEX_Y },
+                { CT_DLO_REAR_TOP_Z, ctRoofLineY(CT_DLO_REAR_TOP_Z) },
+                { CT_DLO_REAR_TOP_Z, dloTopY(CT_DLO_REAR_TOP_Z) },
+                { CT_APEX_Z,         dloTopY(CT_APEX_Z) }
+            };
+            truckPushSidePanel(sides, side, R4b, 4);
+
+            const CtProfilePoint R5[6] = {
+                { CT_DLO_REAR_TOP_Z, ctRoofLineY(CT_DLO_REAR_TOP_Z) },
+                { CT_ROOF_R_Z,       CT_ROOF_R_Y },
+                { CT_TAIL_Z,         CT_BED_RAIL_Y },
+                { CT_TAIL_Z,         CT_BELT_Y },
+                { CT_DLO_REAR_Z,     CT_BELT_Y },
+                { CT_DLO_REAR_TOP_Z, dloTopY(CT_DLO_REAR_TOP_Z) }
+            };
+            truckPushSidePanel(sides, side, R5, 6);
+        }
+
+        // ------------------------------------------------------------------
+        //  UPPER SURFACES - hood, roof, vault, tailgate, floor pan
+        // ------------------------------------------------------------------
+        const Vec3 nHood = normalize(Vec3(0.0f, 1.0f,
+            -(CT_COWL_Y - CT_NOSE_TOP_Y) / (CT_COWL_Z - CT_NOSE_Z)));
+        const Vec3 nWind = normalize(Vec3(0.0f, 1.0f,
+            -(CT_APEX_Y - CT_COWL_Y) / (CT_APEX_Z - CT_COWL_Z)));
+
+        truckPushQuadAuto(body,
+            Vec3(-xB, CT_NOSE_TOP_Y, CT_NOSE_Z),
+            Vec3( xB, CT_NOSE_TOP_Y, CT_NOSE_Z),
+            Vec3( xB, CT_COWL_Y,     CT_COWL_Z),
+            Vec3(-xB, CT_COWL_Y,     CT_COWL_Z),
+            nHood);
+
+        // Panoramic roof and the covered vault are dark glass, not steel.
+        truckPushQuadAuto(darkTop,
+            Vec3(-xR, CT_APEX_Y,   CT_APEX_Z),
+            Vec3( xR, CT_APEX_Y,   CT_APEX_Z),
+            Vec3( xR, CT_ROOF_R_Y, CT_ROOF_R_Z),
+            Vec3(-xR, CT_ROOF_R_Y, CT_ROOF_R_Z),
+            Vec3(0.0f, 1.0f, 0.0f));
+        // The vault cover follows the sail line rather than lying flat, which
+        // is why the real truck's bed sides taper away to nothing at the
+        // tailgate instead of standing up as a box.
+        const float yVaultFront = ctRoofLineY(CT_BED_FRONT_Z);
+        truckPushQuadAuto(darkTop,
+            Vec3(-xR, yVaultFront,    CT_BED_FRONT_Z),
+            Vec3( xR, yVaultFront,    CT_BED_FRONT_Z),
+            Vec3( xR, CT_BED_RAIL_Y,  CT_TAIL_Z),
+            Vec3(-xR, CT_BED_RAIL_Y,  CT_TAIL_Z),
+            Vec3(0.0f, 1.0f, 0.25f));
+
+        // Bed front wall below the rear screen.
+        truckPushQuadAuto(body,
+            Vec3(-xW, CT_BACKLIGHT_Y,              CT_BACKLIGHT_Z),
+            Vec3( xW, CT_BACKLIGHT_Y,              CT_BACKLIGHT_Z),
+            Vec3( xR, ctRoofLineY(CT_BED_FRONT_Z), CT_BED_FRONT_Z),
+            Vec3(-xR, ctRoofLineY(CT_BED_FRONT_Z), CT_BED_FRONT_Z),
+            Vec3(0.0f, 0.4f, 1.0f));
+
+        // ------------------------------------------------------------------
+        //  THE FRONT, IN LAYERS
+        //
+        //  The previous version made the whole nose one flat stainless slab
+        //  running from the bumper to the hood.  On the real vehicle only the
+        //  HOOD is stainless: below its leading edge sits the light blade, and
+        //  below that a DARK GREY fascia panel raked back under the overhang,
+        //  finishing in the black bumper.  Rendering that panel as bright bare
+        //  steel is what made the front read as a featureless wall.
+        //
+        //      y 0.805            hood leading edge, stainless, overhangs
+        //      y 0.735 .. 0.801   full-width light blade, in its channel
+        //      y 0.420 .. 0.735   dark grey fascia, raked back 38 mm
+        //      y 0.185 .. 0.420   black bumper, projecting forward
+        // ------------------------------------------------------------------
+        const float xFace    = xB - 0.055f;       // the nose is only slightly inboard
+        const float yBarTop  = CT_NOSE_TOP_Y - 0.004f;
+        const float yBarBot  = CT_NOSE_TOP_Y - 0.070f;
+        const float yFascia0 = 0.420f;            // meets the top of the bumper
+        const float zFasciaTop = CT_NOSE_Z + 0.012f;
+        const float zFasciaBot = CT_NOSE_Z + 0.050f;
+
+        // Dark fascia panel, raked back so the hood lip stands proud of it.
+        truckPushQuadAuto(fascia,
+            Vec3(-xFace, yFascia0, zFasciaBot),
+            Vec3( xFace, yFascia0, zFasciaBot),
+            Vec3( xFace, yBarBot,  zFasciaTop),
+            Vec3(-xFace, yBarBot,  zFasciaTop),
+            Vec3(0.0f, -0.25f, -1.0f));
+
+        // Angled cheeks tying the fascia out to the body sides.
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
-            const float x = sx * xBody;
-            const Vec3 nSide(sx, 0.0f, 0.0f);
-
-            Vec3 A(x, yBottom, zFrontBottom);
-            Vec3 B(x, yBottom, zTailBottom);
-            Vec3 C(x, yTailBottom, zTailBottom);
-            Vec3 D(x, yTailTop, zTailTop);
-            Vec3 E(x, yRearGlass, zRearGlass);
-            Vec3 F(x, ySill, zCowl);
-            Vec3 G(x, yFrontTop, zFrontTop);
-
-            // One continuous lower side sheet with a straight belt line.
-            truckPushTriN(body, A, B, C, nSide);
-            truckPushTriN(body, A, C, D, nSide);
-            truckPushTriN(body, A, D, E, nSide);
-            truckPushTriN(body, A, E, F, nSide);
-            truckPushTriN(body, A, F, G, nSide);
-
-            // Rear stainless sail / vault shoulder.
-            Vec3 sailTop(x, yRoofRear, zRoofRear);
-            truckPushTriN(body, E, sailTop, D, nSide);
-
-            // Under-window shoulder bevel: outer body folds inward toward glass.
-            truckPushQuadAuto(body,
-                Vec3(sx * xBody,  ySill - 0.012f, zCowl + 0.020f),
-                Vec3(sx * xBody,  yRearGlass + 0.020f, zRearGlass),
-                Vec3(sx * xGlass, yRearGlass + 0.055f, zRearGlass - 0.015f),
-                Vec3(sx * xGlass, ySill + 0.052f, zCowl + 0.030f),
-                Vec3(sx, 0.65f, 0.0f));
-
-            // Thin stainless A-pillar bridge closes the windshield/side gap.
-            truckPushQuadAuto(body,
-                Vec3(sx * xBody, yCowl, zCowl),
-                Vec3(sx * xBody, yRoofApex - 0.020f, zRoofApex),
-                Vec3(sx * xWind, yRoofApex, zRoofApex),
-                Vec3(sx * xWind, yCowl + 0.020f, zCowl),
-                Vec3(sx, 0.35f, -0.25f));
+            truckPushQuadAuto(fascia,
+                Vec3(sx * xFace, yFascia0, zFasciaBot),
+                Vec3(sx * xB,    yFascia0, CT_NOSE_Z),
+                Vec3(sx * xB,    yBarBot,  CT_NOSE_Z),
+                Vec3(sx * xFace, yBarBot,  zFasciaTop),
+                Vec3(sx * 0.8f, 0.0f, -0.6f));
         }
 
-        // Hood / front folded planes.
+        // The stainless hood lip that overhangs the whole assembly, and the
+        // short return down its front edge to the top of the light blade.
         truckPushQuadAuto(body,
-            Vec3(-xBody, yFrontTop, zFrontTop),
-            Vec3( xBody, yFrontTop, zFrontTop),
-            Vec3( xBody, yCowl,     zCowl),
-            Vec3(-xBody, yCowl,     zCowl),
-            Vec3(0.0f, 1.0f, 0.0f));
+            Vec3(-xB, yBarTop,        CT_NOSE_Z),
+            Vec3( xB, yBarTop,        CT_NOSE_Z),
+            Vec3( xB, CT_NOSE_TOP_Y,  CT_NOSE_Z),
+            Vec3(-xB, CT_NOSE_TOP_Y,  CT_NOSE_Z),
+            Vec3(0.0f, 0.0f, -1.0f));
 
+        // Tailgate, raked very slightly outward at the bottom like the real car.
         truckPushQuadAuto(body,
-            Vec3(-xBody, 0.390f, zFrontBottom),
-            Vec3( xBody, 0.390f, zFrontBottom),
-            Vec3( xBody, yFrontTop, zFrontTop),
-            Vec3(-xBody, yFrontTop, zFrontTop),
-            Vec3(0.0f, 0.08f, -1.0f));
-
-        // Short angled front cheeks make the nose boxy instead of paper-thin.
-        const float xFace = 0.915f;
-        truckPushQuadAuto(body,
-            Vec3(-xFace, 0.390f, zFrontBottom - 0.004f),
-            Vec3(-xBody, 0.390f, zFrontBottom),
-            Vec3(-xBody, yFrontTop, zFrontTop),
-            Vec3(-xFace, yFrontTop, zFrontTop - 0.025f),
-            Vec3(-1.0f, 0.0f, -0.4f));
-        truckPushQuadAuto(body,
-            Vec3( xBody, 0.390f, zFrontBottom),
-            Vec3( xFace, 0.390f, zFrontBottom - 0.004f),
-            Vec3( xFace, yFrontTop, zFrontTop - 0.025f),
-            Vec3( xBody, yFrontTop, zFrontTop),
-            Vec3(1.0f, 0.0f, -0.4f));
-
-        // Tailgate: broad vertical stainless panel with a slight rake.
-        truckPushQuadAuto(body,
-            Vec3(-xBody, yTailBottom, zTailBottom),
-            Vec3(-xBody, yTailTop,    zTailTop),
-            Vec3( xBody, yTailTop,    zTailTop),
-            Vec3( xBody, yTailBottom, zTailBottom),
+            Vec3(-xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
+            Vec3(-xB, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
+            Vec3( xB, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
+            Vec3( xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
             Vec3(0.0f, 0.0f, 1.0f));
 
-        // -----------------------------------------------------------------
-        // GLASS - inset dark panes with real folded boundaries.
-        // -----------------------------------------------------------------
-        truckPushQuadAuto(glass,
-            Vec3(-xWind, yCowl + 0.018f, zCowl + 0.012f),
-            Vec3( xWind, yCowl + 0.018f, zCowl + 0.012f),
-            Vec3( xWind, yRoofApex, zRoofApex),
-            Vec3(-xWind, yRoofApex, zRoofApex),
-            Vec3(0.0f, 1.0f, -0.55f));
+        // Underbody floor pan.  It closes the shell so nothing shows through
+        // from below once the lift carries the vehicle to eye level.
+        truckPushQuadAuto(body,
+            Vec3(-xB, CT_FLOOR_Y,    CT_NOSE_Z),
+            Vec3(-xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
+            Vec3( xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
+            Vec3( xB, CT_FLOOR_Y,    CT_NOSE_Z),
+            Vec3(0.0f, -1.0f, 0.0f));
 
-        const float zB = 0.115f;
-        const float yBTop = 1.690f;
-        const float yBLow = 1.145f;
+        // ------------------------------------------------------------------
+        //  FOLD RIBS - the body lines
+        // ------------------------------------------------------------------
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
-            const float x = sx * xGlass;
             const Vec3 nSide(sx, 0.0f, 0.0f);
+            const float x = sx * xB;
 
-            truckPushQuadN(glass,
-                Vec3(x, ySill + 0.060f, zCowl + 0.060f),
-                Vec3(x, yRoofApex - 0.040f, zRoofApex + 0.050f),
-                Vec3(x, yBTop, zB - 0.030f),
-                Vec3(x, yBLow, zB - 0.030f),
-                nSide);
+            // Shoulder: the single wedge line, nose to roof apex.
+            truckPushFoldRib(sides,
+                Vec3(x, CT_NOSE_TOP_Y, CT_NOSE_Z), Vec3(x, CT_COWL_Y, CT_COWL_Z),
+                nSide, nHood, 0.014f, 0.004f);
+            truckPushFoldRib(sides,
+                Vec3(x, CT_COWL_Y, CT_COWL_Z), Vec3(x, CT_APEX_Y, CT_APEX_Z),
+                nSide, nWind, 0.013f, 0.004f);
 
-            truckPushQuadN(glass,
-                Vec3(x, yBLow, zB + 0.040f),
-                Vec3(x, yBTop, zB + 0.040f),
-                Vec3(x, yRoofRear - 0.035f, zRoofRear - 0.040f),
-                Vec3(x, yRearGlass + 0.055f, zRearGlass - 0.050f),
-                nSide);
+            // Roof shoulder and the long sail line down to the tailgate.
+            truckPushFoldRib(sides,
+                Vec3(x, CT_APEX_Y, CT_APEX_Z), Vec3(x, CT_ROOF_R_Y, CT_ROOF_R_Z),
+                nSide, Vec3(0.0f, 1.0f, 0.0f), 0.012f, 0.0035f);
+            truckPushFoldRib(sides,
+                Vec3(x, CT_ROOF_R_Y, CT_ROOF_R_Z), Vec3(x, CT_BED_RAIL_Y, CT_TAIL_Z),
+                nSide, normalize(Vec3(0.0f, 1.0f, 0.25f)), 0.012f, 0.0035f);
+
+            // Rocker line along the bottom of the flank.
+            truckPushFoldRib(sides,
+                Vec3(x, CT_FLOOR_Y, CT_NOSE_Z), Vec3(x, CT_TAIL_BOT_Y, CT_TAIL_Z),
+                nSide, Vec3(0.0f, -1.0f, 0.0f), 0.012f, 0.003f);
+
+            // Vertical corner folds at the nose and the tailgate.
+            truckPushFoldRib(sides,
+                Vec3(x, CT_FLOOR_Y, CT_NOSE_Z), Vec3(x, CT_NOSE_TOP_Y, CT_NOSE_Z),
+                nSide, Vec3(0.0f, 0.0f, -1.0f), 0.011f, 0.003f);
+            truckPushFoldRib(sides,
+                Vec3(x, CT_TAIL_BOT_Y, CT_TAIL_Z),
+                Vec3(x, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
+                nSide, Vec3(0.0f, 0.0f, 1.0f), 0.011f, 0.003f);
+
+            // Belt-line crease.  This is the line that reads strongest in a
+            // three-quarter view, so it gets a rib of its own.
+            truckPushFoldRib(sides,
+                Vec3(x, CT_BELT_Y, CT_DLO_FRONT_Z),
+                Vec3(x, CT_BELT_Y, CT_TAIL_Z - 0.050f),
+                nSide, normalize(Vec3(sx * 0.55f, 1.0f, 0.0f)), 0.010f, 0.0026f);
         }
 
-        // Dark panoramic roof + covered vault/tonneau.
-        truckPushQuadAuto(darkTop,
-            Vec3(-xWind, yRoofApex, zRoofApex),
-            Vec3( xWind, yRoofApex, zRoofApex),
-            Vec3( xWind, yRoofRear, zRoofRear),
-            Vec3(-xWind, yRoofRear, zRoofRear),
-            Vec3(0.0f, 1.0f, 0.0f));
-        truckPushQuadAuto(darkTop,
-            Vec3(-1.018f, yRoofRear - 0.006f, zRoofRear),
-            Vec3( 1.018f, yRoofRear - 0.006f, zRoofRear),
-            Vec3( 1.018f, yTailTop + 0.014f, zTailTop),
-            Vec3(-1.018f, yTailTop + 0.014f, zTailTop),
-            Vec3(0.0f, 1.0f, 0.0f));
+        // Cowl fold across the full width, plus the roof apex ridge.
+        truckPushFoldRib(body,
+            Vec3(-xB, CT_COWL_Y, CT_COWL_Z), Vec3(xB, CT_COWL_Y, CT_COWL_Z),
+            nHood, nWind, 0.013f, 0.0035f);
+        truckPushFoldRib(body,
+            Vec3(-xR, CT_APEX_Y, CT_APEX_Z), Vec3(xR, CT_APEX_Y, CT_APEX_Z),
+            nWind, Vec3(0.0f, 1.0f, 0.0f), 0.012f, 0.003f);
 
-        // -----------------------------------------------------------------
-        // Flush black window trim / seals.
-        // -----------------------------------------------------------------
-        const float xTrim = 1.036f;
-        const float trimHalf = 0.014f;
+        // ------------------------------------------------------------------
+        //  GLAZING
+        //
+        //  The windscreen is one enormous single pane.  The side glass is cut
+        //  by the B-pillar into a long raked front triangle and a rear
+        //  pentagon, which is the actual production shape.
+        // ------------------------------------------------------------------
+        truckPushQuadAuto(glass,
+            Vec3(-xW, CT_COWL_Y + 0.012f, CT_COWL_Z + 0.010f),
+            Vec3( xW, CT_COWL_Y + 0.012f, CT_COWL_Z + 0.010f),
+            Vec3( xW, CT_APEX_Y - 0.004f, CT_APEX_Z),
+            Vec3(-xW, CT_APEX_Y - 0.004f, CT_APEX_Z),
+            nWind);
+
+        truckPushQuadAuto(glass,
+            Vec3(-xW, CT_ROOF_R_Y - 0.006f, CT_ROOF_R_Z),
+            Vec3(-xW, CT_BACKLIGHT_Y,       CT_BACKLIGHT_Z),
+            Vec3( xW, CT_BACKLIGHT_Y,       CT_BACKLIGHT_Z),
+            Vec3( xW, CT_ROOF_R_Y - 0.006f, CT_ROOF_R_Z),
+            Vec3(0.0f, 1.0f, 0.62f));
+
+        for (int side = -1; side <= 1; side += 2)
+        {
+            const float sx = static_cast<float>(side);
+            const float x = sx * xG;
+            const Vec3 nSide(sx, 0.0f, 0.0f);
+
+            // Front door glass: long raked leading edge, vertical pillar edge.
+            truckPushTriN(glass,
+                Vec3(x, CT_BELT_Y + 0.012f,       CT_DLO_FRONT_Z + 0.030f),
+                Vec3(x, CT_BELT_Y + 0.012f,       zBpF - 0.006f),
+                Vec3(x, dloTopY(zBpF) - 0.008f,   zBpF - 0.006f),
+                nSide);
+
+            // Rear door and quarter glass.
+            const Vec3 r0(x, CT_BELT_Y + 0.012f, zBpR + 0.006f);
+            const Vec3 r1(x, CT_BELT_Y + 0.012f, CT_DLO_REAR_Z - 0.030f);
+            const Vec3 r2(x, dloTopY(CT_DLO_REAR_TOP_Z) - 0.008f,
+                             CT_DLO_REAR_TOP_Z - 0.010f);
+            const Vec3 r3(x, dloTopY(CT_APEX_Z) - 0.008f, CT_APEX_Z);
+            const Vec3 r4(x, dloTopY(zBpR) - 0.008f,      zBpR + 0.006f);
+            truckPushTriN(glass, r0, r1, r2, nSide);
+            truckPushTriN(glass, r0, r2, r3, nSide);
+            truckPushTriN(glass, r0, r3, r4, nSide);
+        }
+
+        // ------------------------------------------------------------------
+        //  FLUSH BLACK SEALS
+        // ------------------------------------------------------------------
+        const float xTrim = (CT_X_BODY + CT_X_GLASS) * 0.5f;
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
             const float x = sx * xTrim;
             const Vec3 nSide(sx, 0.0f, 0.0f);
 
+            // Belt-line weather seal running the length of the glazing.
             truckPushQuadN(trim,
-                Vec3(x, ySill + 0.035f, zCowl + 0.040f),
-                Vec3(x, ySill + 0.078f, zCowl + 0.040f),
-                Vec3(x, yRearGlass + 0.080f, zRearGlass - 0.030f),
-                Vec3(x, yRearGlass + 0.035f, zRearGlass - 0.030f),
+                Vec3(x, CT_BELT_Y - 0.004f, CT_DLO_FRONT_Z),
+                Vec3(x, CT_BELT_Y + 0.020f, CT_DLO_FRONT_Z),
+                Vec3(x, CT_BELT_Y + 0.020f, CT_DLO_REAR_Z),
+                Vec3(x, CT_BELT_Y - 0.004f, CT_DLO_REAR_Z),
                 nSide);
 
+            // B-pillar blackout.
             truckPushQuadN(trim,
-                Vec3(x, yBLow - 0.010f, zB - trimHalf),
-                Vec3(x, yBTop + 0.010f, zB - trimHalf),
-                Vec3(x, yBTop + 0.010f, zB + trimHalf),
-                Vec3(x, yBLow - 0.010f, zB + trimHalf),
-                nSide);
-
-            truckPushQuadN(trim,
-                Vec3(x, yRoofApex - 0.020f, zRoofApex + 0.030f),
-                Vec3(x, yRoofApex + 0.020f, zRoofApex + 0.030f),
-                Vec3(x, yRoofRear + 0.020f, zRoofRear),
-                Vec3(x, yRoofRear - 0.025f, zRoofRear),
+                Vec3(x, CT_BELT_Y,              zBpF - 0.004f),
+                Vec3(x, dloTopY(zBpF) + 0.010f, zBpF - 0.004f),
+                Vec3(x, dloTopY(zBpR) + 0.010f, zBpR + 0.004f),
+                Vec3(x, CT_BELT_Y,              zBpR + 0.004f),
                 nSide);
         }
 
-        // -----------------------------------------------------------------
-        // TRUE 3D FIVE-FACET FENDER FLARES - four sealed extrusions.
-        // -----------------------------------------------------------------
+        // ------------------------------------------------------------------
+        //  WHEEL-ARCH CLADDING
+        // ------------------------------------------------------------------
         truckPushFiveFacetFender(fenders, -1, CAR_FAXLE_Z, CAR_FWHEEL_R);
         truckPushFiveFacetFender(fenders,  1, CAR_FAXLE_Z, CAR_FWHEEL_R);
         truckPushFiveFacetFender(fenders, -1, CAR_RAXLE_Z, CAR_RWHEEL_R);
         truckPushFiveFacetFender(fenders,  1, CAR_RAXLE_Z, CAR_RWHEEL_R);
 
-        // -----------------------------------------------------------------
-        // BUMPERS - full 3D blocks.  The rear block projects behind and wider
-        // than the tailgate, which was missing from the old flat-strip model.
-        // -----------------------------------------------------------------
-        truckPushBox(bumpers, -1.105f, 1.105f, 0.165f, 0.395f, -2.820f, -2.625f);
-        truckPushBox(bumpers, -1.120f, 1.120f, 0.155f, 0.420f,  2.605f,  2.855f);
+        // ------------------------------------------------------------------
+        //  BUMPERS - full 3D blocks that project past the shell.
+        // ------------------------------------------------------------------
+        truckPushBox(bumpers, -xB - 0.012f, xB + 0.012f, 0.185f, 0.420f,
+                     CT_NOSE_Z - 0.115f, CT_NOSE_Z + 0.010f);
+        truckPushBox(bumpers, -xB - 0.020f, xB + 0.020f, 0.175f, 0.445f,
+                     CT_TAIL_Z - 0.030f, CT_TAIL_Z + 0.105f);
 
-        // Full-width front white and rear red light bars.
-        truckPushQuadN(frontLight,
-            Vec3(-0.980f, 0.950f, -2.634f), Vec3(0.980f, 0.950f, -2.634f),
-            Vec3( 0.980f, 0.992f, -2.629f), Vec3(-0.980f, 0.992f, -2.629f),
-            Vec3(0.0f, 0.0f, -1.0f));
-        truckPushQuadN(rearLight,
-            Vec3(-0.985f, 1.238f, 2.695f), Vec3(-0.985f, 1.282f, 2.690f),
-            Vec3( 0.985f, 1.282f, 2.690f), Vec3( 0.985f, 1.238f, 2.695f),
-            Vec3(0.0f, 0.0f, 1.0f));
+        // ------------------------------------------------------------------
+        //  LIGHT BARS
+        //
+        //  A real light bar is a lens sunk into a dark channel, not a glowing
+        //  decal.  The recess is built first so the lens has something to sit
+        //  in and so the opening casts its own small shadow line.
+        // ------------------------------------------------------------------
+        {
+            // ------------------------------------------------------------
+            //  FRONT LIGHT ASSEMBLY
+            //
+            //  On the real vehicle this is the dominant feature of the front:
+            //  one continuous white blade running the FULL width, sitting
+            //  right on the fold where the hood meets the fascia, with two
+            //  small driving-lamp clusters low down in the black bumper.
+            //
+            //  The previous version had a single short bar covering 87% of
+            //  the width, buried 40 mm back in its recess, and no lower lamps
+            //  at all - so from three-quarter views the front read as a blank
+            //  slab.
+            // ------------------------------------------------------------
+            const float yBar0 = yBarBot;
+            const float yBar1 = yBarTop;
+            const float zFace = CT_NOSE_Z + 0.006f;   // just behind the hood lip
+            const float zBack = CT_NOSE_Z + 0.044f;   // back of the channel
+            const float xBar  = xFace;                // essentially full width
 
-        // Angular triangular production mirrors at the base of the A-pillars.
-        // Each is a shallow triangular prism rather than a rectangular cube.
+            // Dark channel the blade sits in, so it has a physical opening.
+            truckPushQuadN(lightRecess,
+                Vec3(-xBar, yBar0, zBack), Vec3( xBar, yBar0, zBack),
+                Vec3( xBar, yBar1, zBack), Vec3(-xBar, yBar1, zBack),
+                Vec3(0.0f, 0.0f, -1.0f));
+            truckPushQuadAuto(lightRecess,
+                Vec3(-xBar, yBar1, zBack), Vec3( xBar, yBar1, zBack),
+                Vec3( xBar, yBar1, zFace), Vec3(-xBar, yBar1, zFace),
+                Vec3(0.0f, -1.0f, 0.0f));
+            truckPushQuadAuto(lightRecess,
+                Vec3(-xBar, yBar0, zFace), Vec3( xBar, yBar0, zFace),
+                Vec3( xBar, yBar0, zBack), Vec3(-xBar, yBar0, zBack),
+                Vec3(0.0f, 1.0f, 0.0f));
+
+            // The blade itself, nearly flush with the fascia.
+            truckPushQuadN(frontLight,
+                Vec3(-xBar + 0.004f, yBar0 + 0.013f, zFace + 0.002f),
+                Vec3( xBar - 0.004f, yBar0 + 0.013f, zFace + 0.002f),
+                Vec3( xBar - 0.004f, yBar1 - 0.013f, zFace + 0.002f),
+                Vec3(-xBar + 0.004f, yBar1 - 0.013f, zFace + 0.002f),
+                Vec3(0.0f, 0.0f, -1.0f));
+
+            // It wraps a short way around each front corner, which is what
+            // makes it read as a blade rather than a decal.
+            for (int side = -1; side <= 1; side += 2)
+            {
+                const float sx = static_cast<float>(side);
+                truckPushQuadAuto(frontLight,
+                    Vec3(sx * (xBar - 0.004f), yBar0 + 0.013f, zFace + 0.002f),
+                    Vec3(sx * (xB - 0.004f),   yBar0 + 0.013f, CT_NOSE_Z + 0.040f),
+                    Vec3(sx * (xB - 0.004f),   yBar1 - 0.013f, CT_NOSE_Z + 0.040f),
+                    Vec3(sx * (xBar - 0.004f), yBar1 - 0.013f, zFace + 0.002f),
+                    Vec3(sx * 0.6f, 0.0f, -0.8f));
+            }
+
+            // Two driving-lamp clusters low in the bumper, set in their own
+            // recesses at roughly a quarter and three quarters of the width.
+            for (int side = -1; side <= 1; side += 2)
+            {
+                const float sx = static_cast<float>(side);
+                const float cx = sx * 0.560f;
+                const float hw = 0.150f;
+                const float yA = 0.268f, yB2 = 0.346f;
+                const float zL = CT_NOSE_Z - 0.118f;   // front face of the bumper
+
+                truckPushQuadN(lightRecess,
+                    Vec3(cx - hw - 0.018f, yA - 0.018f, zL + 0.004f),
+                    Vec3(cx + hw + 0.018f, yA - 0.018f, zL + 0.004f),
+                    Vec3(cx + hw + 0.018f, yB2 + 0.018f, zL + 0.004f),
+                    Vec3(cx - hw - 0.018f, yB2 + 0.018f, zL + 0.004f),
+                    Vec3(0.0f, 0.0f, -1.0f));
+                truckPushQuadN(frontLight,
+                    Vec3(cx - hw, yA,  zL),
+                    Vec3(cx + hw, yA,  zL),
+                    Vec3(cx + hw, yB2, zL),
+                    Vec3(cx - hw, yB2, zL),
+                    Vec3(0.0f, 0.0f, -1.0f));
+            }
+        }
+        {
+            const float yL0 = CT_BED_RAIL_Y - 0.090f;
+            const float yL1 = CT_BED_RAIL_Y - 0.030f;
+            const float zOuter = CT_TAIL_Z + 0.004f;
+            const float zInner = CT_TAIL_Z - 0.034f;
+            const float xL = xB - 0.028f;
+
+            truckPushQuadN(lightRecess,
+                Vec3(-xL, yL0, zInner), Vec3(-xL, yL1, zInner),
+                Vec3( xL, yL1, zInner), Vec3( xL, yL0, zInner),
+                Vec3(0.0f, 0.0f, 1.0f));
+            truckPushQuadAuto(lightRecess,
+                Vec3(-xL, yL1, zInner), Vec3( xL, yL1, zInner),
+                Vec3( xL, yL1, zOuter), Vec3(-xL, yL1, zOuter),
+                Vec3(0.0f, -1.0f, 0.0f));
+
+            truckPushQuadN(rearLight,
+                Vec3(-xL + 0.012f, yL0 + 0.012f, zInner + 0.008f),
+                Vec3(-xL + 0.012f, yL1 - 0.012f, zInner + 0.008f),
+                Vec3( xL - 0.012f, yL1 - 0.012f, zInner + 0.008f),
+                Vec3( xL - 0.012f, yL0 + 0.012f, zInner + 0.008f),
+                Vec3(0.0f, 0.0f, 1.0f));
+        }
+
+        // ------------------------------------------------------------------
+        //  MIRRORS - shallow triangular prisms at the base of the A-pillars.
+        // ------------------------------------------------------------------
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
-            const float xIn  = sx * 1.045f;
-            const float xOut = sx * 1.245f;
+            const float xIn  = sx * (xB + 0.012f);
+            const float xOut = sx * (xB + 0.205f);
             const Vec3 outN(sx, 0.0f, 0.0f);
 
-            Vec3 aIn (xIn,  1.145f, -1.285f);
-            Vec3 bIn (xIn,  1.315f, -1.145f);
-            Vec3 cIn (xIn,  1.155f, -0.985f);
-            Vec3 aOut(xOut, 1.145f, -1.285f);
-            Vec3 bOut(xOut, 1.315f, -1.145f);
-            Vec3 cOut(xOut, 1.155f, -0.985f);
+            Vec3 aIn (xIn,  1.150f, -1.230f);
+            Vec3 bIn (xIn,  1.322f, -1.090f);
+            Vec3 cIn (xIn,  1.162f, -0.930f);
+            Vec3 aOut(xOut, 1.150f, -1.230f);
+            Vec3 bOut(xOut, 1.322f, -1.090f);
+            Vec3 cOut(xOut, 1.162f, -0.930f);
 
             truckPushTriN(mirrorHousing, aOut, bOut, cOut, outN);
             truckPushTriN(mirrorHousing, cIn, bIn, aIn, -outN);
@@ -1916,20 +2680,22 @@ namespace
             truckPushQuadAuto(mirrorHousing, bIn, bOut, cOut, cIn, Vec3(0.0f, 0.45f, 0.45f));
             truckPushQuadAuto(mirrorHousing, cIn, cOut, aOut, aIn, Vec3(0.0f, -1.0f, 0.0f));
 
-            // Slightly inset reflective triangular face avoids z-fighting.
-            const float xFace = sx * 1.247f;
+            const float xFaceM = sx * (xB + 0.207f);
             truckPushTriN(mirrorGlass,
-                Vec3(xFace, 1.165f, -1.250f),
-                Vec3(xFace, 1.292f, -1.145f),
-                Vec3(xFace, 1.170f, -1.020f), outN);
+                Vec3(xFaceM, 1.168f, -1.198f),
+                Vec3(xFaceM, 1.300f, -1.090f),
+                Vec3(xFaceM, 1.176f, -0.962f), outN);
         }
 
+        truckUpload(gTruckSideMesh, sides);
         truckUpload(gTruckBodyMesh, body);
         truckUpload(gTruckGlassMesh, glass);
         truckUpload(gTruckDarkTopMesh, darkTop);
         truckUpload(gTruckTrimMesh, trim);
         truckUpload(gTruckFenderMesh, fenders);
         truckUpload(gTruckBumperMesh, bumpers);
+        truckUpload(gTruckLightRecessMesh, lightRecess);
+        truckUpload(gTruckFasciaMesh, fascia);
         truckUpload(gTruckFrontLightMesh, frontLight);
         truckUpload(gTruckRearLightMesh, rearLight);
         truckUpload(gTruckMirrorHousingMesh, mirrorHousing);
@@ -1958,95 +2724,144 @@ namespace
     }
 }
 
-void Scene::drawCar(const Mat4& parent, const Vec3& bodyColor)
+void Scene::drawCar(const Mat4& parent, const Vec3& bodyColor, float sidePolish,
+                   float wheelSpinDeg, bool lightsOn, float dirtAmount)
 {
     buildCybertruckShellMesh();
 
-    // Body colour remains almost neutral stainless even when drawCar() receives
-    // the old per-car tint.  This keeps every instance recognisably Cybertruck.
-    const Vec3 stainless(0.505f, 0.525f, 0.550f);
-    const Vec3 body = stainless * 0.990f + bodyColor * 0.010f;
-    const Vec3 glass(0.022f, 0.032f, 0.045f);
-    const Vec3 tonneau(0.045f, 0.052f, 0.062f);
-    const Vec3 trim(0.030f, 0.032f, 0.036f);
+    const float polish = (sidePolish < 0.0f) ? 0.0f : (sidePolish > 1.0f ? 1.0f : sidePolish);
 
-    // Metallic/roughness values tuned for bare brushed stainless and glossy
-    // neutral glass.  Lower albedo prevents the body from self-illuminating.
-    drawTruckMeshBatch(gTruckBodyMesh,       parent, body,    0.0f, 0.96f, 0.30f, MAT_STAINLESS);
-    drawTruckMeshBatch(gTruckGlassMesh,      parent, glass,   0.0f, 0.02f, 0.055f, MAT_GLASS);
-    drawTruckMeshBatch(gTruckDarkTopMesh,    parent, tonneau, 0.0f, 0.08f, 0.30f, MAT_CARBON);
-    drawTruckMeshBatch(gTruckTrimMesh,       parent, trim,    0.0f, 0.01f, 0.78f, MAT_PLASTIC);
-    drawTruckMeshBatch(gTruckFenderMesh,     parent, trim,    0.0f, 0.01f, 0.80f, MAT_PLASTIC);
-    drawTruckMeshBatch(gTruckBumperMesh,     parent, trim,    0.0f, 0.01f, 0.84f, MAT_PLASTIC);
-    drawTruckMeshBatch(gTruckMirrorHousingMesh, parent, trim, 0.0f, 0.01f, 0.66f, MAT_PLASTIC);
+    // Body colour stays essentially neutral stainless even when drawCar()
+    // receives a per-car tint, so every instance is recognisably the same
+    // vehicle.  Real 30X cold-rolled stainless is a slightly cool mid grey.
+    const Vec3 stainless(0.515f, 0.532f, 0.556f);
+    const Vec3 body = stainless * 0.985f + bodyColor * 0.015f;
+    const Vec3 glass(0.020f, 0.028f, 0.040f);
+    const Vec3 tonneau(0.115f, 0.122f, 0.134f);
+    const Vec3 trim(0.028f, 0.030f, 0.034f);
+
+    // ---------------------------------------------------------------------
+    //  THE TWO-FINISH BODY
+    //
+    //  The side skin and the rest of the shell are the same material and the
+    //  same colour.  Only the FINISH differs.  Drawing the flanks inside a
+    //  setSurfaceFinish() block is what makes the robot's polishing pass
+    //  physically visible: the polished flanks drop to roughness ~0.06 and
+    //  gain a clear-coat lobe, while the hood, roof and tailgate stay at the
+    //  as-rolled ~0.28 and keep their anisotropic brushed streak.
+    // ---------------------------------------------------------------------
+    //  0.40 is a genuinely as-rolled finish - matte enough that the brushed
+    //  grain reads clearly.  The shader takes it down to about 0.09 at full
+    //  polish, which is the difference between a smeared reflection and a
+    //  sharp one.  That five-fold change in micro-roughness is the whole
+    //  point of the polishing stage.
+    const float kStainlessAsRolled = 0.40f;
+
+    Scene::setSurfaceFinish(polish);
+    Scene::setSurfaceDirt(dirtAmount);
+    drawTruckMeshBatch(gTruckSideMesh, parent, body, 0.0f, 0.97f, kStainlessAsRolled, MAT_STAINLESS);
+    Scene::clearSurfaceFinish();
+
+    //  The hood, fascia, tailgate and floor pan take the SAME finish as the
+    //  flanks.  Polishing one panel and leaving the rest as-rolled was useful
+    //  while proving the finish system worked, but a serviced vehicle is
+    //  polished all over - and the whole shell catching the light together is
+    //  far stronger to look at than one bright door.
+    Scene::setSurfaceFinish(polish);
+    drawTruckMeshBatch(gTruckBodyMesh,          parent, body,    0.0f, 0.97f, kStainlessAsRolled, MAT_STAINLESS);
+    Scene::clearSurfaceFinish();
+    drawTruckMeshBatch(gTruckGlassMesh,         parent, glass,   0.0f, 0.02f, 0.050f, MAT_GLASS);
+    drawTruckMeshBatch(gTruckDarkTopMesh,       parent, tonneau, 0.0f, 0.04f, 0.42f, MAT_CARBON);
+    drawTruckMeshBatch(gTruckTrimMesh,          parent, trim,    0.0f, 0.01f, 0.78f, MAT_PLASTIC);
+    drawTruckMeshBatch(gTruckFenderMesh,        parent, trim,    0.0f, 0.01f, 0.80f, MAT_PLASTIC);
+    drawTruckMeshBatch(gTruckBumperMesh,        parent, trim,    0.0f, 0.01f, 0.84f, MAT_PLASTIC);
+    drawTruckMeshBatch(gTruckLightRecessMesh,   parent, trim * 0.70f, 0.0f, 0.0f, 0.88f, MAT_PLASTIC);
+    // The front fascia is a dark grey moulding, not bodywork.
+    drawTruckMeshBatch(gTruckFasciaMesh, parent, Vec3(0.088f, 0.092f, 0.100f),
+                       0.0f, 0.04f, 0.62f, MAT_PLASTIC);
+    drawTruckMeshBatch(gTruckMirrorHousingMesh, parent, trim,    0.0f, 0.01f, 0.66f, MAT_PLASTIC);
     drawTruckMeshBatch(gTruckMirrorGlassMesh,   parent, glass * 1.15f, 0.0f, 0.02f, 0.045f, MAT_GLASS);
-    drawTruckMeshBatch(gTruckFrontLightMesh, parent, Vec3(1.0f, 0.975f, 0.900f), 1.0f, 0.0f, 0.10f, MAT_PAINT);
-    drawTruckMeshBatch(gTruckRearLightMesh,  parent, Vec3(0.940f, 0.060f, 0.045f), 1.0f, 0.0f, 0.10f, MAT_PAINT);
-
-    // Boxy rocker cladding ties the lower body into the fender flare depth.
-    drawCube(parent * place(Vec3(-1.070f, 0.438f,  0.000f), Vec3(0.055f, 0.145f, 2.210f)),
-             trim, 0.0f, 0.0f, 0.82f);
-    drawCube(parent * place(Vec3( 1.070f, 0.438f,  0.000f), Vec3(0.055f, 0.145f, 2.210f)),
-             trim, 0.0f, 0.0f, 0.82f);
-
-    // Very thin door shut-lines and flush handle recesses; no floating trim strips.
-    for (int side = -1; side <= 1; side += 2)
-    {
-        const float sx = static_cast<float>(side);
-        drawCube(parent * place(Vec3(sx * 1.057f, 0.792f, -0.345f), Vec3(0.006f, 0.500f, 0.008f)),
-                 trim * 0.56f, 0.0f, 0.0f, 0.90f, MAT_PLASTIC);
-        drawCube(parent * place(Vec3(sx * 1.057f, 0.792f,  0.750f), Vec3(0.006f, 0.500f, 0.008f)),
-                 trim * 0.56f, 0.0f, 0.0f, 0.90f, MAT_PLASTIC);
-        drawCube(parent * place(Vec3(sx * 1.058f, 0.952f, -0.145f), Vec3(0.007f, 0.018f, 0.170f)),
-                 trim * 0.58f, 0.0f, 0.0f, 0.82f, MAT_PLASTIC);
-        drawCube(parent * place(Vec3(sx * 1.058f, 0.952f,  0.925f), Vec3(0.007f, 0.018f, 0.170f)),
-                 trim * 0.58f, 0.0f, 0.0f, 0.82f, MAT_PLASTIC);
-    }
-
+    // A switched-off lamp is not black - it is a dark lens that still catches
+    // the room.  Only the emissive term changes, so the bar stays visible as a
+    // physical part of the body when the lights are off.
+    const float lampGlow = lightsOn ? 1.0f : 0.06f;
+    drawTruckMeshBatch(gTruckFrontLightMesh, parent,
+        Vec3(1.0f, 0.975f, 0.900f) * (lightsOn ? 1.0f : 0.55f),
+        lampGlow, 0.0f, 0.10f, MAT_PAINT);
+    drawTruckMeshBatch(gTruckRearLightMesh, parent,
+        Vec3(0.940f, 0.060f, 0.045f) * (lightsOn ? 1.0f : 0.60f),
+        lampGlow, 0.0f, 0.10f, MAT_PAINT);
 
     // ---------------------------------------------------------------------
-    // Production-side details: front door leading seams, subtle folded-edge
-    // highlight strips and compact side mirrors.  The strips are deliberately
-    // millimetre-thin: they simulate the real truck's tiny edge radii rather
-    // than adding decorative chrome mouldings that the Cybertruck does not have.
+    //  ROCKER CLADDING + PANEL SHUT LINES
+    //
+    //  The shut lines are millimetre-thin recessed slots, not applied strips.
+    //  On the real vehicle the door cuts are the only interruption in an
+    //  otherwise unbroken flank, so getting their position right matters more
+    //  than adding any extra decoration.
     // ---------------------------------------------------------------------
-    auto drawSideFold = [&](float sx, float y0, float z0, float y1, float z1,
-                            float thickness, const Vec3& c)
-    {
-        const float dy = y1 - y0;
-        const float dz = z1 - z0;
-        const float len = std::sqrt(dy * dy + dz * dz);
-        const float angleX = std::atan2(-dy, dz) * 180.0f / PI_F;
-        drawCube(parent * place(Vec3(sx * 1.058f, (y0 + y1) * 0.5f, (z0 + z1) * 0.5f),
-            Vec3(thickness, thickness, len), Vec3(angleX, 0.0f, 0.0f)),
-            c, 0.0f, 0.94f, 0.18f, MAT_STAINLESS);
-    };
+    const float zDoorFront = CT_DLO_FRONT_Z;        // leading edge of the front door
+    const float zDoorMid   = CT_B_PILLAR_Z;        // B-pillar cut
+    const float zDoorRear  = CT_DLO_REAR_Z + 0.04f; // trailing edge of the rear door
 
     for (int side = -1; side <= 1; side += 2)
     {
         const float sx = static_cast<float>(side);
+        const float xSkin = sx * (CT_X_BODY + 0.003f);
 
-        // Leading edge of the front door, just behind the front quarter panel.
-        drawCube(parent * place(Vec3(sx * 1.057f, 0.795f, -1.115f),
-            Vec3(0.006f, 0.545f, 0.008f)), trim * 0.52f,
-            0.0f, 0.0f, 0.92f, MAT_PLASTIC);
+        // Rocker cladding ties the lower body into the fender flare depth.
+        drawCube(parent * place(Vec3(sx * (CT_X_BODY + 0.022f), 0.470f, 0.000f),
+            Vec3(0.050f, 0.150f, 2.180f)), trim, 0.0f, 0.0f, 0.82f, MAT_PLASTIC);
 
-        // Millimetre-scale fold catches only; these should appear as specular
-        // edge response, not as decorative chrome strips.
-        drawSideFold(sx, 0.980f, -2.625f, 1.090f, -1.405f, 0.006f, body * 1.025f);
-        drawSideFold(sx, 1.720f,  0.090f, 1.655f,  0.785f, 0.006f, body * 1.030f);
-        drawSideFold(sx, 1.655f,  0.785f, 1.290f,  2.575f, 0.006f, body * 1.020f);
+        // Three vertical shut lines from the rocker up to the belt.
+        const float cuts[3] = { zDoorFront, zDoorMid, zDoorRear };
+        for (int c = 0; c < 3; ++c)
+        {
+            drawCube(parent * place(Vec3(xSkin, 0.800f, cuts[c]),
+                Vec3(0.004f, 0.600f, 0.007f)), trim * 0.55f, 0.0f, 0.0f, 0.90f, MAT_PLASTIC);
+        }
+
+        // Flush handle recesses, just below the belt line on each door.
+        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, -0.620f),
+            Vec3(0.006f, 0.030f, 0.185f)), trim * 0.52f, 0.0f, 0.0f, 0.80f, MAT_PLASTIC);
+        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, 0.330f),
+            Vec3(0.006f, 0.030f, 0.185f)), trim * 0.52f, 0.0f, 0.0f, 0.80f, MAT_PLASTIC);
+
+        // Charge-port door on the rear quarter.
+        drawCube(parent * place(Vec3(xSkin, 0.930f, 1.760f),
+            Vec3(0.005f, 0.200f, 0.145f)), body * 0.965f, 0.0f, 0.94f, 0.33f, MAT_STAINLESS);
     }
 
-    // IMPORTANT: width in this project is X, not Z.  The requested outward tyre
-    // offset is therefore applied as +/-X.  This moves the heavy tyres out under
-    // the newly extruded fenders instead of leaving them tucked under the body.
+    // Bed rail tie-downs.  Their height is read from the master profile, so
+    // they ride the tapering rail instead of floating above or sinking into it.
+    for (int i = 0; i < 4; ++i)
+    {
+        const float z = 1.420f + static_cast<float>(i) * 0.330f;
+        const float y = ctRoofLineY(z) + 0.012f;
+        for (int side = -1; side <= 1; side += 2)
+        {
+            const float sx = static_cast<float>(side);
+            drawCube(parent * place(Vec3(sx * (CT_X_BODY - 0.055f), y, z),
+                Vec3(0.050f, 0.022f, 0.070f)), trim * 1.25f, 0.0f, 0.55f, 0.45f, MAT_PAINTED_METAL);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    //  WHEELS
+    //
+    //  Width in this project is X, so the requested outward tyre offset is
+    //  applied as +/-X.  That puts the tyres out under the extruded cladding
+    //  instead of leaving them tucked under the body.
+    // ---------------------------------------------------------------------
     const float fTrack = CAR_FTRACK + CAR_WHEEL_OUTSET;
     const float rTrack = CAR_RTRACK + CAR_WHEEL_OUTSET;
-    drawWheel(parent, Vec3(-fTrack, CAR_FWHEEL_R, CAR_FAXLE_Z), CAR_FWHEEL_R, CAR_FWHEEL_W,  1.0f);
-    drawWheel(parent, Vec3( fTrack, CAR_FWHEEL_R, CAR_FAXLE_Z), CAR_FWHEEL_R, CAR_FWHEEL_W, -1.0f);
-    drawWheel(parent, Vec3(-rTrack, CAR_RWHEEL_R, CAR_RAXLE_Z), CAR_RWHEEL_R, CAR_RWHEEL_W,  1.0f);
-    drawWheel(parent, Vec3( rTrack, CAR_RWHEEL_R, CAR_RAXLE_Z), CAR_RWHEEL_R, CAR_RWHEEL_W, -1.0f);
+    //  The two sides of the vehicle are mirrored, so their wheel frames are
+    //  handed differently; negating the spin on one side keeps all four
+    //  turning the same way on the road.
+    drawWheel(parent, Vec3(-fTrack, CAR_FWHEEL_R, CAR_FAXLE_Z), CAR_FWHEEL_R, CAR_FWHEEL_W,  1.0f,  wheelSpinDeg);
+    drawWheel(parent, Vec3( fTrack, CAR_FWHEEL_R, CAR_FAXLE_Z), CAR_FWHEEL_R, CAR_FWHEEL_W, -1.0f, -wheelSpinDeg);
+    drawWheel(parent, Vec3(-rTrack, CAR_RWHEEL_R, CAR_RAXLE_Z), CAR_RWHEEL_R, CAR_RWHEEL_W,  1.0f,  wheelSpinDeg);
+    drawWheel(parent, Vec3( rTrack, CAR_RWHEEL_R, CAR_RAXLE_Z), CAR_RWHEEL_R, CAR_RWHEEL_W, -1.0f, -wheelSpinDeg);
 }
 
 
@@ -2123,35 +2938,115 @@ void Scene::drawScanner(const Mat4& parent)
 //  toolType: 0 scanner, 1 impact driver, 2 gripper, 3 polisher.
 // ============================================================================
 
-static void drawRobotToolHeadImpl(const Mat4& parent, int toolType)
+// Soft blue cleaning pad used by the automatic service demo.  It deliberately
+// uses only the existing sphere/cylinder primitives, so there is no imported
+// mesh or physics dependency.
+static void drawCleaningSpongeImpl(const Mat4& parent)
 {
-    // Common quick-change coupler.
+    const Vec3 foamBlue(0.175f, 0.285f, 0.455f);
+    const Vec3 foamTop (0.225f, 0.365f, 0.565f);
+    const Vec3 seam    (0.055f, 0.085f, 0.135f);
+
+    // Flattened UV spheres give the soft, rounded foam/vinyl silhouette.
+    Scene::drawSphere(parent * Scene::place(Vec3(0.0f, 0.0f, 0.0f),
+        Vec3(0.42f, 0.105f, 0.27f)), foamBlue, 0.0f, 0.0f, 0.82f, MAT_PLASTIC);
+    Scene::drawSphere(parent * Scene::place(Vec3(0.0f, 0.045f, 0.0f),
+        Vec3(0.385f, 0.072f, 0.235f)), foamTop, 0.0f, 0.0f, 0.88f, MAT_PLASTIC);
+    Scene::drawCylS(parent * translate(0.0f, -0.070f, 0.0f) *
+        scale(0.365f, 0.018f, 0.230f), seam, 0.0f, 0.0f, 0.90f, MAT_RUBBER);
+}
+
+// ---------------------------------------------------------------------------
+//  How far the lowest physical part of each tool hangs below its frame origin,
+//  in unscaled tool units.  Without this the rack positioned every tool by its
+//  CENTRE, so the longer heads sat halfway inside the tabletop.
+//
+//      scanner   lens disc        0.740 + half 0.030
+//      driver    socket tip       0.880 + half 0.110
+//      gripper   finger pads      0.810 + half 0.060
+//      polisher  pad + marker     0.720 + 0.052
+// ---------------------------------------------------------------------------
+static float toolBottomDrop(int toolType)
+{
+    switch (toolType)
+    {
+    case 1:  return 0.990f;   // impact driver
+    case 2:  return 0.870f;   // gripper
+    case 3:  return 0.772f;   // polisher
+    default: return 0.770f;   // scanner
+    }
+}
+
+static void drawRobotToolHeadImpl(const Mat4& parent, int toolType, float gripperOpen = 0.0f, float polisherAngle = 0.0f, float driverAngle = 0.0f)
+{
+    // Common quick-change coupler.  This is the part that stays on the wrist.
     Scene::drawCylS(parent * translate(0.0f, -0.08f, 0.0f) * scale(0.25f, 0.14f, 0.25f), C_JOINT);
+
+    // toolType < 0 means NO tool fitted.  Showing the bare coupler between
+    // releasing one head and picking up the next is what proves to the viewer
+    // that an exchange actually happened rather than one mesh being swapped
+    // for another.
+    if (toolType < 0)
+    {
+        Scene::drawCylS(parent * translate(0.0f, -0.165f, 0.0f) * scale(0.17f, 0.05f, 0.17f),
+            C_CHROME, 0.0f, 0.0f, 0.45f, MAT_CHROME);
+        for (int i = 0; i < 3; ++i)
+        {
+            Mat4 pin = parent * translate(0.0f, -0.20f, 0.0f)
+                     * rotateY(static_cast<float>(i) * 120.0f) * translate(0.085f, 0.0f, 0.0f);
+            Scene::drawCylS(pin * scale(0.035f, 0.055f, 0.035f),
+                C_CHROME * 0.85f, 0.0f, 0.0f, 0.45f, MAT_CHROME);
+        }
+        return;
+    }
 
     if (toolType == 1) // impact driver / drill
     {
         Scene::drawCube(parent * Scene::place(Vec3(0.0f, -0.34f, 0.0f), Vec3(0.42f, 0.42f, 0.34f)), C_ROBOT);
         Scene::drawCylS(parent * translate(0.0f, -0.63f, 0.0f) * scale(0.14f, 0.30f, 0.14f), C_ROBOT_DARK);
-        Scene::drawCylS(parent * translate(0.0f, -0.88f, 0.0f) * scale(0.055f, 0.22f, 0.055f), C_CHROME);
+        Mat4 driverSpin = parent * translate(0.0f, -0.88f, 0.0f) * rotateY(driverAngle);
+        Scene::drawCylS(driverSpin * scale(0.055f, 0.22f, 0.055f), C_CHROME);
+        // Small offset marker on the socket makes the spin visible during tightening.
+        Scene::drawCube(driverSpin * Scene::place(Vec3(0.055f, -0.105f, 0.0f), Vec3(0.035f, 0.020f, 0.025f)),
+            Vec3(0.22f, 0.65f, 0.92f), 0.35f, 0.65f, 0.22f, MAT_PAINTED_METAL);
         Scene::drawCube(parent * Scene::place(Vec3(0.0f, -0.31f, 0.19f), Vec3(0.25f, 0.10f, 0.05f)), C_NEON_CYAN, 0.55f);
     }
     else if (toolType == 2) // two-finger gripper
     {
         Scene::drawCube(parent * Scene::place(Vec3(0.0f, -0.30f, 0.0f), Vec3(0.48f, 0.24f, 0.38f)), C_ROBOT_DARK);
-        for (int s = -1; s <= 1; s += 2)
+        const float open01 = (gripperOpen < 0.0f) ? 0.0f : (gripperOpen > 1.0f ? 1.0f : gripperOpen);
+        const float fingerX = 0.18f + open01 * 0.16f;
+        for (int side = -1; side <= 1; side += 2)
         {
-            float x = 0.24f * static_cast<float>(s);
+            float x = fingerX * static_cast<float>(side);
             Scene::drawCube(parent * Scene::place(Vec3(x, -0.56f, 0.0f), Vec3(0.10f, 0.50f, 0.12f),
-                Vec3(0.0f, 0.0f, -12.0f * static_cast<float>(s))), C_CHROME);
-            Scene::drawCube(parent * Scene::place(Vec3(x + 0.055f * static_cast<float>(s), -0.81f, 0.0f),
-                Vec3(0.16f, 0.12f, 0.18f)), C_RUBBER);
+                Vec3(0.0f, 0.0f, -8.0f * static_cast<float>(side) * (1.0f - 0.35f * open01))), C_CHROME);
+            Scene::drawCube(parent * Scene::place(Vec3(x + 0.045f * static_cast<float>(side), -0.81f, 0.0f),
+                Vec3(0.15f, 0.12f, 0.19f)), C_RUBBER);
         }
     }
     else if (toolType == 3) // rotary polisher
     {
         Scene::drawCube(parent * Scene::place(Vec3(0.0f, -0.30f, 0.0f), Vec3(0.42f, 0.34f, 0.38f)), C_ROBOT);
         Scene::drawCylS(parent * translate(0.0f, -0.55f, 0.0f) * scale(0.13f, 0.22f, 0.13f), C_ROBOT_DARK);
-        Scene::drawCylS(parent * translate(0.0f, -0.72f, 0.0f) * scale(0.58f, 0.08f, 0.58f), Vec3(0.62f, 0.62f, 0.58f));
+
+        Mat4 spinningPad = parent * translate(0.0f, -0.72f, 0.0f) * rotateY(polisherAngle);
+        const Vec3 padBlue(0.145f, 0.235f, 0.390f);
+        Scene::drawCylS(spinningPad * scale(0.58f, 0.085f, 0.58f),
+            padBlue, 0.0f, 0.0f, 0.86f, MAT_PLASTIC);
+
+        // Three small contrasting fabric marks make the rotation visible even
+        // though the pad itself is circular.
+        for (int i = 0; i < 3; ++i)
+        {
+            // The pad is 0.085 thick, so its working face is at -0.0425.
+            // These markers belong ON that face; at -0.090 they were hanging
+            // 48 mm below it in mid-air, and they were the part of the tool
+            // that reached the panel first.
+            Mat4 mark = spinningPad * rotateY(static_cast<float>(i) * 120.0f)
+                * Scene::place(Vec3(0.25f, -0.046f, 0.0f), Vec3(0.22f, 0.012f, 0.055f));
+            Scene::drawCube(mark, Vec3(0.48f, 0.55f, 0.66f), 0.0f, 0.0f, 0.92f, MAT_PLASTIC);
+        }
     }
     else // scanner / inspection light head
     {
@@ -2159,46 +3054,98 @@ static void drawRobotToolHeadImpl(const Mat4& parent, int toolType)
     }
 }
 
-void Scene::drawRobotToolStation(const Mat4& parent, int selectedTool)
+// ---------------------------------------------------------------------------
+//  Where each tool lives on the table, in the station's own frame.
+//  A 2 x 2 layout, spaced so the wrist can drop onto one dock without the
+//  tool beside it being in the way.
+// ---------------------------------------------------------------------------
+Vec3 Scene::toolDockPosition(int toolType)
 {
-    // Sideways tool-changing table beside the arm.
-    drawContactPatch(parent, Vec3(0.0f, 0.0f, 0.0f), 2.65f, 1.25f);
-    drawCube(parent * place(Vec3(0.0f, 0.78f, 0.0f), Vec3(2.60f, 0.12f, 1.10f)), C_STEEL);
+    const float x = (toolType & 1) ? 0.78f : -0.78f;   // scanner/gripper left
+    const float z = (toolType < 2) ? -0.52f : 0.52f;   // scanner/driver front
+    return Vec3(x, kToolDockTopY, z);
+}
+
+void Scene::drawRobotToolStation(const Mat4& parent, int selectedTool, bool spongeOnTable)
+{
+    // ======================================================================
+    //  OPEN DOCKING TABLE
+    //
+    //  This used to carry a 2.55 x 1.20 m vertical backboard standing behind
+    //  the docks.  It was pure obstruction: it forced every tool change to be
+    //  approached from the side, which is what drove the long base rotations,
+    //  and it put a wall directly where the wrist wanted to descend.
+    //
+    //  The board is gone.  The station is now an open table that the robot
+    //  reaches straight down into, which is also how a real quick-change rack
+    //  is laid out.
+    // ======================================================================
+    drawContactPatch(parent, Vec3(0.0f, 0.0f, 0.0f), 2.45f, 1.95f);
+
+    // Tabletop and frame.
+    drawCube(parent * place(Vec3(0.0f, 0.78f, 0.0f), Vec3(2.35f, 0.11f, 1.85f)), C_STEEL);
+    drawCube(parent * place(Vec3(0.0f, 0.70f, 0.0f), Vec3(2.20f, 0.06f, 1.70f)), C_ROBOT_DARK);
     for (int sx = -1; sx <= 1; sx += 2)
         for (int sz = -1; sz <= 1; sz += 2)
-            drawCube(parent * place(Vec3(1.05f * sx, 0.38f, 0.38f * sz), Vec3(0.12f, 0.76f, 0.12f)), C_ROBOT_DARK);
+            drawCube(parent * place(Vec3(1.00f * sx, 0.37f, 0.78f * sz),
+                Vec3(0.11f, 0.74f, 0.11f)), C_ROBOT_DARK);
+    // Low stretcher rails - frame only, nothing that stands up.
+    for (int sz = -1; sz <= 1; sz += 2)
+        drawCube(parent * place(Vec3(0.0f, 0.17f, 0.78f * static_cast<float>(sz)),
+            Vec3(2.00f, 0.06f, 0.07f)), C_ROBOT_DARK);
 
-    // Four dock sockets. The selected tool is absent from the rack because it
-    // is visually attached to the robot wrist.
+    // ---- four docks in a 2 x 2 grid ------------------------------------
     for (int i = 0; i < 4; ++i)
     {
-        float x = -0.90f + static_cast<float>(i) * 0.60f;
-        drawCylS(parent * translate(x, 0.89f, 0.0f) * scale(0.27f, 0.06f, 0.27f),
-            (i == selectedTool) ? C_NEON_CYAN : C_ROBOT_DARK, (i == selectedTool) ? 0.55f : 0.0f);
-        if (i != selectedTool)
+        const Vec3 d = toolDockPosition(i);
+        const bool fitted = (i == selectedTool);
+
+        // Dock pedestal: a dark base with a short connector post, so it is
+        // obvious where each tool belongs even when it has been taken away.
+        drawCube(parent * place(Vec3(d.x, 0.865f, d.z), Vec3(0.46f, 0.05f, 0.46f)),
+            C_ROBOT_DARK * 0.85f);
+        drawCylS(parent * translate(d.x, 0.905f, d.z) * scale(0.30f, 0.035f, 0.30f),
+            fitted ? C_NEON_CYAN : C_ROBOT_DARK, fitted ? 0.55f : 0.0f);
+        drawCylS(parent * translate(d.x, 0.945f, d.z) * scale(0.15f, 0.055f, 0.15f),
+            C_CHROME * 0.80f, 0.0f, 0.0f, 0.55f, MAT_CHROME);
+
+        // Status lamp set INTO the tabletop rather than onto a backboard.
+        drawCube(parent * place(Vec3(d.x, 0.842f, d.z + 0.30f), Vec3(0.20f, 0.02f, 0.05f)),
+            fitted ? C_NEON : C_STEEL, fitted ? 0.70f : 0.0f);
+
+        if (!fitted)
         {
-            Mat4 dock = parent * translate(x, 1.32f, 0.0f) * scale(0.62f, 0.62f, 0.62f);
+            // Stand the tool ON its dock: the frame origin is lifted by the
+            // tool's own drop, so its lowest part just touches the connector.
+            const float y = kToolDockTopY + toolBottomDrop(i) * kToolRackScale;
+            Mat4 dock = parent * translate(d.x, y, d.z)
+                      * scale(kToolRackScale, kToolRackScale, kToolRackScale);
             drawRobotToolHeadImpl(dock, i);
         }
     }
 
-    // Back board and simple status lamps.
-    drawCube(parent * place(Vec3(0.0f, 1.45f, 0.48f), Vec3(2.55f, 1.20f, 0.08f)), C_ROBOT_DARK);
-    for (int i = 0; i < 4; ++i)
-    {
-        float x = -0.90f + static_cast<float>(i) * 0.60f;
-        drawCube(parent * place(Vec3(x, 1.82f, 0.53f), Vec3(0.18f, 0.08f, 0.04f)),
-            (i == selectedTool) ? C_NEON : C_STEEL, (i == selectedTool) ? 0.7f : 0.0f);
-    }
+    // The soft sponge is not a quick-change head; the gripper picks it up.
+    if (spongeOnTable)
+        drawCleaningSpongeImpl(parent * translate(0.0f, 0.90f, 0.0f));
 }
 
 void Scene::drawRobotArm(const Mat4& parent, float baseYaw, float joint1Angle, float joint2Angle,
-    float wristPitch, float wristRoll, int toolType)
+    float wristPitch, float wristRoll, int toolType,
+    float gripperOpen, bool spongeAttached, float polisherAngle, float driverAngle)
 {
     // IMPORTANT MECHANICAL RULE:
     // The rectangular pedestal is bolted to the floor and NEVER yaws. Only the
     // circular turntable at the top, the shoulder yoke, and the complete arm
     // above it rotate around Y.  This matches a real industrial robot base.
+
+    // SURFACE FINISH:
+    // An industrial robot is POWDER-COATED, not bare steel.  Letting these
+    // parts infer their material from their grey colour classified them as
+    // brushed stainless, which gave the arm a mirror finish and a strong
+    // directional grain - it read as camouflage wrapped around the castings.
+    // One finish block makes the whole arm matte; individual draws that name a
+    // material of their own (the chrome fasteners below) still win.
+    Scene::setSurfaceFinish(0.0f, 0.06f, 0.0f, MAT_PAINTED_METAL);
 
     // ---- FIXED FOUNDATION ------------------------------------------------
     drawCube(parent * place(Vec3(0.0f, 0.09f, 0.0f), Vec3(1.70f, 0.18f, 1.70f)), C_ROBOT_DARK);
@@ -2206,9 +3153,12 @@ void Scene::drawRobotArm(const Mat4& parent, float baseYaw, float joint1Angle, f
         for (int sz = -1; sz <= 1; sz += 2)
         {
             Vec3 bp(0.68f * static_cast<float>(sx), 0.0f, 0.68f * static_cast<float>(sz));
-            drawCylinder(parent * translate(bp) * scale(0.095f, 0.20f, 0.095f), C_STEEL);      // bolt shank
-            drawCylinder(parent * translate(bp.x, 0.205f, bp.z) * scale(0.115f, 0.045f, 0.115f), C_CHROME);  // hex head
-            drawSphere(parent * place(Vec3(bp.x, 0.235f, bp.z), Vec3(0.045f, 0.030f, 0.045f)), C_CHROME * 1.15f); // highlight dome
+            drawCylinder(parent * translate(bp) * scale(0.095f, 0.20f, 0.095f), C_STEEL,
+                0.0f, 0.0f, 0.65f, MAT_BRUSHED_STEEL);                                        // bolt shank
+            drawCylinder(parent * translate(bp.x, 0.205f, bp.z) * scale(0.115f, 0.045f, 0.115f),
+                C_CHROME, 0.0f, 0.0f, 0.65f, MAT_CHROME);                                     // hex head
+            drawSphere(parent * place(Vec3(bp.x, 0.235f, bp.z), Vec3(0.045f, 0.030f, 0.045f)),
+                C_CHROME * 1.15f, 0.0f, 0.0f, 0.65f, MAT_CHROME);                             // highlight dome
         }
 
     drawCube(parent * place(Vec3(0.0f, 0.48f, 0.0f), Vec3(1.05f, 0.62f, 1.05f)), C_ROBOT);
@@ -2236,8 +3186,10 @@ void Scene::drawRobotArm(const Mat4& parent, float baseYaw, float joint1Angle, f
     // Cable conduit running the length of the segment, with glands where it
     // enters the joint housing at each end.
     drawCube(j1 * place(Vec3(0.0f, ARM_LOWER_LEN * 0.5f, -0.20f), Vec3(0.10f, ARM_LOWER_LEN - 0.30f, 0.10f)), C_ROBOT_DARK);
-    drawCylS(j1 * place(Vec3(0.0f, 0.16f, -0.20f), Vec3(0.075f, 0.10f, 0.075f)), C_CHROME * 0.70f);
-    drawCylS(j1 * place(Vec3(0.0f, ARM_LOWER_LEN - 0.16f, -0.20f), Vec3(0.075f, 0.10f, 0.075f)), C_CHROME * 0.70f);
+    drawCylS(j1 * place(Vec3(0.0f, 0.16f, -0.20f), Vec3(0.075f, 0.10f, 0.075f)), C_CHROME * 0.70f,
+        0.0f, 0.0f, 0.65f, MAT_CHROME);
+    drawCylS(j1 * place(Vec3(0.0f, ARM_LOWER_LEN - 0.16f, -0.20f), Vec3(0.075f, 0.10f, 0.075f)), C_CHROME * 0.70f,
+        0.0f, 0.0f, 0.65f, MAT_CHROME);
 
     // Elbow pitch.
     Mat4 j2 = j1 * translate(0.0f, ARM_LOWER_LEN, 0.0f) * rotateZ(joint2Angle);
@@ -2250,18 +3202,27 @@ void Scene::drawRobotArm(const Mat4& parent, float baseYaw, float joint1Angle, f
     drawCube(j2 * place(Vec3(0.0f, ARM_UPPER_LEN * 0.55f, 0.0f), Vec3(0.30f, 0.09f, 0.30f)), C_ROBOT_DARK);
     // Matching cable conduit continuing up the forearm from the shoulder run.
     drawCube(j2 * place(Vec3(0.0f, ARM_UPPER_LEN * 0.5f, -0.17f), Vec3(0.08f, ARM_UPPER_LEN - 0.26f, 0.08f)), C_ROBOT_DARK);
-    drawCylS(j2 * place(Vec3(0.0f, 0.14f, -0.17f), Vec3(0.060f, 0.09f, 0.060f)), C_CHROME * 0.70f);
+    drawCylS(j2 * place(Vec3(0.0f, 0.14f, -0.17f), Vec3(0.060f, 0.09f, 0.060f)), C_CHROME * 0.70f,
+        0.0f, 0.0f, 0.65f, MAT_CHROME);
 
-    // User-controlled wrist.  Main.cpp clamps wristPitch to -90..+90, so the
-    // complete scanner/tool head has a true 180-degree top-to-bottom hinge sweep.
-    // There is deliberately no automatic leveling: the operator controls where
-    // the head points while the long-reach shoulder/forearm cover the whole truck.
+    // User-controlled wrist.  Main.cpp allows wrapped pitch angles so the same
+    // physical orientation can be reached without forcing the shoulder/elbow
+    // through the vehicle.  Automatic-service poses use this to keep the wrist
+    // outside the Cybertruck while the tool face is normal to the work surface.
     Mat4 tip = j2 * translate(0.0f, ARM_UPPER_LEN, 0.0f);
     drawSphere(tip * place(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.38f, 0.38f, 0.38f)), C_JOINT);
     drawCube(tip * place(Vec3(0.0f, 0.0f, 0.0f), Vec3(0.28f, 0.20f, 0.28f)), C_JOINT * 0.82f);
     Mat4 wrist = tip * rotateZ(wristPitch) * rotateY(wristRoll);
     drawCylS(wrist * translate(0.0f, -0.08f, 0.0f) * scale(0.31f, 0.13f, 0.31f), C_JOINT);
-    drawRobotToolHeadImpl(wrist * translate(0.0f, -0.16f, 0.0f), toolType);
+    Mat4 toolFrame = wrist * translate(0.0f, -0.16f, 0.0f);
+    drawRobotToolHeadImpl(toolFrame, toolType, gripperOpen, polisherAngle, driverAngle);
+
+    // The sponge is just parented to the gripper while held. This is the
+    // intentionally simple substitute for rigid-body grasping.
+    if (toolType == 2 && spongeAttached)
+        drawCleaningSpongeImpl(toolFrame * translate(0.0f, -0.91f, 0.0f));
+
+    Scene::clearSurfaceFinish();
 }
 // ============================================================================
 //  SECTION 12 - OVERHEAD LAMP FIXTURE
@@ -2763,9 +3724,20 @@ void Scene::drawWorkStool(const Mat4& parent, int index)
 
     drawContactPatch(s, Vec3(0.0f, 0.0f, 0.0f), 0.60f, 0.60f);
 
-    drawCylS(s * place(Vec3(0.0f, 0.480f, 0.0f), Vec3(0.380f, 0.075f, 0.380f)), C_RUBBER * 1.25f);  // seat
-    drawCylS(s * place(Vec3(0.0f, 0.430f, 0.0f), Vec3(0.180f, 0.040f, 0.180f)), C_GALV);            // seat plate
-    drawCylS(s * place(Vec3(0.0f, 0.235f, 0.0f), Vec3(0.070f, 0.400f, 0.070f)), C_CHROME);          // gas post
+    // Padded mechanic's cushion. A flattened UV sphere gives the seat a
+    // visibly soft crown and rounded perimeter instead of the old hard cylinder.
+    const Vec3 seatBlue(0.176f, 0.275f, 0.430f);
+    const Vec3 seatTop (0.205f, 0.322f, 0.505f);
+    const Vec3 seatSeam(0.050f, 0.070f, 0.105f);
+    drawSphere(s * place(Vec3(0.0f, 0.492f, 0.0f), Vec3(0.415f, 0.112f, 0.415f)),
+        seatBlue, 0.0f, 0.0f, 0.64f, MAT_PLASTIC);
+    drawSphere(s * place(Vec3(0.0f, 0.535f, 0.0f), Vec3(0.370f, 0.068f, 0.370f)),
+        seatTop, 0.0f, 0.0f, 0.68f, MAT_PLASTIC);
+    drawCylS(s * translate(0.0f, 0.420f, 0.0f) * scale(0.375f, 0.018f, 0.375f),
+        seatSeam, 0.0f, 0.0f, 0.90f, MAT_RUBBER);
+
+    drawCylS(s * place(Vec3(0.0f, 0.405f, 0.0f), Vec3(0.185f, 0.040f, 0.185f)), C_GALV);            // seat plate
+    drawCylS(s * place(Vec3(0.0f, 0.220f, 0.0f), Vec3(0.070f, 0.370f, 0.070f)), C_CHROME);          // gas post
 
     // Five leg spokes at 72 degrees, each ending in a caster.
     for (int i = 0; i < 5; ++i)
@@ -2961,6 +3933,140 @@ void Scene::drawPipeRun(const Mat4& parent, float length, int index)
 
 
 // ============================================================================
+//  AUTOMATIC SERVICE VISUALS
+//
+//  These are presentation effects only.  Main.cpp drives a small finite-state
+//  sequence and supplies simple 0..1 values.  No AI, IK, rigid-body physics or
+//  texture painting is required.
+// ============================================================================
+
+static float serviceClamp01(float v)
+{
+    return (v < 0.0f) ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+static Vec3 serviceMix(const Vec3& a, const Vec3& b, float t)
+{
+    t = serviceClamp01(t);
+    return a * (1.0f - t) + b * t;
+}
+
+static void drawServiceCarEffects(const Mat4& car, const Scene::ServiceVisualState& service)
+{
+    // ========================================================================
+    //  WHAT IS LEFT HERE, AND WHAT IS NOT
+    //
+    //  The dirt used to be six flat boxes floating 4 mm off the door skin.
+    //  From any angle they read as exactly that - grey discs stuck on the car.
+    //  Grime is now shaded ON the surface (see Scene::setSurfaceDirt and the
+    //  uDirt block in the fragment shader), so it darkens, roughens and
+    //  de-metallises the panel underneath instead of hiding it.
+    //
+    //  The travelling highlight that used to sweep the panel after polishing
+    //  has been removed outright.  A bright bar crawling across a finished
+    //  surface is not something a polished panel does; it was a second scan
+    //  line wearing a different colour.  The polish now shows as what it
+    //  physically is - the flank drops from 0.40 roughness to 0.16 - and that
+    //  difference is visible without being announced.
+    //
+    //  The scanner beam below stays, because a line-projecting laser scanner
+    //  really does put a bright line on what it is measuring.
+    // ========================================================================
+    const float xSkin = -(CT_X_BODY + 0.004f);
+
+    // Line laser projected by the inspection head, with its soft bloom edge.
+    if (service.scanProgress >= 0.0f)
+    {
+        const float p = serviceClamp01(service.scanProgress);
+        const float z = -0.74f + p * 1.52f;
+        Scene::drawCube(car * Scene::place(Vec3(xSkin - 0.012f, 0.925f, z),
+            Vec3(0.014f, 0.700f, 0.045f)), C_NEON_CYAN, 0.88f, 0.0f, 0.20f, MAT_PAINT);
+        Scene::drawCube(car * Scene::place(Vec3(xSkin - 0.009f, 0.925f, z),
+            Vec3(0.010f, 0.740f, 0.115f)), C_NEON_CYAN * 0.42f, 0.28f, 0.0f, 0.35f, MAT_PAINT);
+    }
+}
+
+
+static void drawServiceWheelEffects(const Mat4& car, const Scene::ServiceVisualState& service)
+{
+    // Front-left wheel is nearest the robot.  These five service lug nuts are
+    // intentionally added only for the automatic service sequence so the
+    // audience can see a real before/after effect without removing the wheel.
+    const float track = CAR_FTRACK + CAR_WHEEL_OUTSET;
+    const float radius = CAR_FWHEEL_R;
+    const float width = CAR_FWHEEL_W;
+    const float outward = 1.0f; // left side of vehicle
+    Mat4 hub = car * translate(-track, radius, CAR_FAXLE_Z) * rotateZ(90.0f);
+
+    const float lugRadius = radius * 0.28f;
+    const float looseFaceY = outward * width * 0.605f;
+    const float seatedFaceY = outward * width * 0.525f;
+    const Vec3 lugMetal(0.46f, 0.49f, 0.52f);
+
+    for (int i = 0; i < 5; ++i)
+    {
+        const float p = serviceClamp01(service.lugProgress[i]);
+        const float a = 90.0f - static_cast<float>(i) * 72.0f;
+        const float ar = radians(a);
+        const float faceY = looseFaceY + (seatedFaceY - looseFaceY) * p;
+        // In the wheel frame, local X becomes vehicle vertical after the
+        // 90-degree axle rotation, while local Z stays longitudinal.
+        const float lx = std::sin(ar) * lugRadius;
+        const float lz = std::cos(ar) * lugRadius;
+        Mat4 lugFrame = hub * translate(lx, faceY, lz) * rotateY(service.driverAngle * (0.25f + 0.75f * p));
+
+        Scene::drawCylS(lugFrame * scale(0.080f, 0.060f, 0.080f),
+            serviceMix(lugMetal * 0.78f, C_CHROME, p), 0.0f, 0.82f, 0.30f, MAT_PAINTED_METAL);
+        // Tiny bright line on each nut makes inward motion and rotation legible.
+        Scene::drawCube(lugFrame * Scene::place(Vec3(0.037f, outward * 0.033f, 0.0f), Vec3(0.028f, 0.012f, 0.012f)),
+            C_CHROME, 0.18f, 0.90f, 0.22f, MAT_PAINTED_METAL);
+    }
+
+    // Amber before-service ring fades out while the green secured ring fades in.
+    float avg = 0.0f;
+    for (int i = 0; i < 5; ++i) avg += serviceClamp01(service.lugProgress[i]);
+    avg *= 0.20f;
+    // Status rings.  Drawn as twelve short arc segments around the hub rather
+    // than as a filled disc - a solid glowing plate buried the lug nuts the
+    // operator is meant to be watching.
+    auto drawStatusRing = [&](float ringRadius, float faceOffset,
+                              const Vec3& colour, float glow)
+    {
+        if (glow <= 0.01f) return;
+        for (int i = 0; i < 12; ++i)
+        {
+            Mat4 seg = hub * translate(0.0f, outward * width * faceOffset, 0.0f)
+                * rotateY(static_cast<float>(i) * 30.0f)
+                * translate(ringRadius, 0.0f, 0.0f);
+            Scene::drawCube(seg * scale(0.030f, 0.012f, 0.055f),
+                colour, glow, 0.0f, 0.30f, MAT_PAINT);
+        }
+    };
+
+    const float amber = (1.0f - avg) * 0.80f;
+    drawStatusRing(radius * 0.46f, 0.545f, Vec3(0.95f, 0.54f, 0.08f), amber);
+
+    const float green = serviceClamp01(service.wheelServiceGlow);
+    drawStatusRing(radius * 0.52f, 0.560f, Vec3(0.16f, 0.88f, 0.34f), 0.95f * green);
+}
+
+static void drawServiceIndicators(const Mat4& world, const Scene::ServiceVisualState& service)
+{
+    // Amber beacon just inside the garage opening while the automatic door is
+    // moving. It is intentionally small and only becomes bright when pulsed.
+    const float warning = serviceClamp01(service.warningPulse);
+    Scene::drawCube(world * Scene::place(Vec3(5.45f, 3.20f, 12.72f), Vec3(0.18f, 0.18f, 0.09f)),
+        Vec3(0.38f, 0.24f, 0.055f), warning * 0.95f, 0.0f, 0.36f, MAT_PAINT);
+
+    // Green completion lamp above the robot tool station.
+    const float done = serviceClamp01(service.completeGlow);
+    if (done > 0.01f)
+        Scene::drawCube(world * Scene::place(Vec3(-7.35f, 2.18f, -1.36f), Vec3(0.62f, 0.10f, 0.05f)),
+            Vec3(0.18f, 0.85f, 0.34f), 0.90f * done, 0.0f, 0.20f, MAT_PAINT);
+}
+
+
+// ============================================================================
 //  SECTION 17 - THE COMPLETE SCENE
 //
 //  This is the only function Main.cpp calls. Read it top to bottom and you
@@ -2992,7 +4098,8 @@ void Scene::drawScene(float doorOffset,
     float wristPitch,
     float wristRoll,
     int robotTool,
-    float fanAngle)
+    float fanAngle,
+    const ServiceVisualState& service)
 {
     // The world root. Everything is drawn relative to this.
     Mat4 world = mat4Identity();
@@ -3013,7 +4120,8 @@ void Scene::drawScene(float doorOffset,
     }
 
     // ---- 3. Neon sign on the back wall ---------------------------------------
-    drawNeonSign(world * translate(0.0f, 5.15f, -12.88f));
+    if (gSwitches.neonSign)
+        drawNeonSign(world * translate(0.0f, 5.15f, -12.88f));
 
     // ---- 4. Three service bays -----------------------------------------------
     // The SAME lift function three times. The main one carries the car; the
@@ -3025,12 +4133,44 @@ void Scene::drawScene(float doorOffset,
     // ---- 5. The car under service, standing on the lift runways --------------
     // liftTopY() returns the surface the wheels stand on, so when the lift is
     // animated later the car rises with it and this line never changes.
-    drawCar(world * translate(0.0f, liftTopY(liftHeight), LIFT_Z), C_CAR_ORANGE);
+    //
+    // DRIVE-OUT: gSwitches.carDrive slides the whole vehicle down the aisle and
+    // out through the door.  Because it is applied to the PARENT matrix, the
+    // body, glazing, cladding, wheels and every service decal travel with it -
+    // one number moves the entire assembly, which is the whole point of
+    // building the scene as a transform hierarchy.
+    const float driveZ = CAR_DRIVE_DISTANCE * gSwitches.carDrive;
+    // ---- alignment turntable -------------------------------------------
+    // A plate let into the runways that the vehicle stands on.  Rotating it is
+    // what lets a fixed arm reach both flanks; the index marks make the motion
+    // legible when it turns.
+    const float turnY = liftTopY(liftHeight);
+    drawCylS(world * translate(0.0f, turnY - 0.015f, LIFT_Z + driveZ)
+        * scale(5.60f, 0.050f, 5.60f), C_LIFT_DARK * 1.25f, 0.0f, 0.55f, 0.52f, MAT_TREAD);
+    for (int i = 0; i < 8; ++i)
+        drawCube(world * translate(0.0f, turnY + 0.012f, LIFT_Z + driveZ)
+            * rotateY(service.carYaw + static_cast<float>(i) * 45.0f)
+            * place(Vec3(2.45f, 0.0f, 0.0f), Vec3(0.55f, 0.020f, 0.085f)),
+            C_LIFT_YELLOW, 0.0f, 0.0f, 0.62f, MAT_PAINT);
+
+    Mat4 serviceCar = world * translate(0.0f, turnY, LIFT_Z + driveZ)
+                    * rotateY(service.carYaw);
+    drawCar(serviceCar, C_CAR_ORANGE, service.polishAmount,
+            gSwitches.wheelSpin, gSwitches.vehicleLights, service.dirtAmount);
+
+    // The dirt, scan line and polish sweep only make sense while the vehicle is
+    // actually in the service bay.
+    if (gSwitches.carDrive < 0.02f)
+    {
+        drawServiceCarEffects(serviceCar, service);
+        drawServiceWheelEffects(serviceCar, service);
+    }
 
     // ---- 6. Robotic inspection arm ---------------------------------------------
     drawRobotArm(world * translate(ARM_X, 0.0f, ARM_Z), robotBaseYaw, joint1Angle, joint2Angle,
-        wristPitch, wristRoll, robotTool);
-    drawRobotToolStation(world * translate(ARM_X - 2.75f, 0.0f, ARM_Z + 0.35f), robotTool);
+        wristPitch, wristRoll, robotTool, service.gripperOpen, service.spongeAttached, service.polisherAngle, service.driverAngle);
+    drawRobotToolStation(world * translate(ARM_X - 3.30f, 0.0f, ARM_Z + 0.35f), robotTool, service.spongeOnTable);
+    drawServiceIndicators(world, service);
 
     // ---- 7. Two parked cars inside, both deliberately untidy --------------------
     // A car parked by a human is never square in its bay. messy() gives each
@@ -3038,8 +4178,10 @@ void Scene::drawScene(float doorOffset,
     drawParkingBay(world * translate(PARK_X, 0.0f, PARK_Z_A));
     drawParkingBay(world * translate(PARK_X, 0.0f, PARK_Z_B));
 
-    drawCar(world * translate(PARK_X, 0.0f, PARK_Z_A) * messy(101, 0.16f, 5.0f, 0.0f) * rotateY(90.0f), C_CAR_WHITE);
-    drawCar(world * translate(PARK_X, 0.0f, PARK_Z_B) * messy(207, 0.16f, 5.0f, 0.0f) * rotateY(90.0f), C_CAR_GUNMETAL);
+    drawCar(world * translate(PARK_X, 0.0f, PARK_Z_A) * messy(101, 0.16f, 5.0f, 0.0f) * rotateY(90.0f),
+        C_CAR_WHITE, 0.0f, 0.0f, gSwitches.vehicleLights);
+    drawCar(world * translate(PARK_X, 0.0f, PARK_Z_B) * messy(207, 0.16f, 5.0f, 0.0f) * rotateY(90.0f),
+        C_CAR_GUNMETAL, 0.0f, 0.0f, gSwitches.vehicleLights);
 
     // Wheel chocks at their wheels - 4 pairs.
     for (int i = 0; i < 2; ++i)
@@ -3051,26 +4193,47 @@ void Scene::drawScene(float doorOffset,
         drawWheelChock(world * translate(PARK_X + 1.60f, 0.0f, z + 0.95f) * rotateY(-90.0f), i * 2 + 5);
     }
 
-    // ---- 8. Four cars parked outside on the apron -------------------------------
-    // The same model again. They cost nothing and they do two jobs: they give
-    // the exterior a sense of scale, and they give the eye something to focus
-    // on through the open door instead of a bright empty rectangle.
-    const float AP = WALL_Z + WALL_T + 5.60f;
-    drawCar(world * translate(-9.80f, 0.0f, AP) * messy(301, 0.22f, 7.0f, 0.0f) * rotateY(180.0f), C_CAR_SILVER);
-    drawCar(world * translate(-6.10f, 0.0f, AP + 0.35f) * messy(302, 0.22f, 7.0f, 0.0f) * rotateY(180.0f), C_CAR_BLUE);
-    drawCar(world * translate(7.90f, 0.0f, AP - 0.30f) * messy(303, 0.22f, 7.0f, 0.0f) * rotateY(180.0f), C_CAR_RED);
-    drawCar(world * translate(11.40f, 0.0f, AP) * messy(304, 0.22f, 7.0f, 0.0f) * rotateY(180.0f), C_CAR_SAND);
+    // ---- 8. Live traffic crossing the forecourt opening -------------------------
+    // The four cars that used to sit parked on the apron are gone: they filled
+    // the doorway with static clutter.  One vehicle driving across the opening
+    // does the same job - scale, and something for the eye to settle on - and
+    // it also gives the scene continuous motion that is visible from anywhere
+    // inside the workshop.
+    //
+    // It is the SAME drawCar() as everything else, yawed 90 degrees so it faces
+    // along the road, with its wheel spin driven from the distance travelled.
+    if (gSwitches.trafficOn)
+    {
+        const float roadZ = WALL_Z + WALL_T + 6.00f + 4.00f;   // carriageway centre
+        // Keep to the near lane so the vehicle passes squarely across the door.
+        const float laneZ = roadZ - 2.10f;
+        drawCar(world * translate(gSwitches.trafficX, 0.0f, laneZ) * rotateY(90.0f),
+                C_CAR_SILVER, 0.0f, gSwitches.trafficSpin, gSwitches.vehicleLights);
+    }
 
     // ---- 9. Ceiling: fixtures, fans, reels, extraction, sprinklers, pipes ---------
-    // 14 light fixtures in two rows. The beams are at 3.5 m spacing, so the
-    // fixtures are put at 3.1 m spacing and offset half a metre - close enough
-    // to look deliberate, off enough that nothing lines up.
-    for (int i = 0; i < 7; ++i)
+    // 8 light fixtures in two rows of four.  The earlier 14 made the ceiling
+    // read as a grid of lamps rather than a workshop, and they fought the
+    // reflections on the vehicle for attention.  Four per side at 5.2 m
+    // spacing still covers both bays and matches the eight point lights the
+    // shader actually evaluates, so what you see is what is lighting you.
+    if (gSwitches.ceilingLights)
     {
-        float z = -10.1f + static_cast<float>(i) * 3.10f;
-        drawCeilingFixture(world * translate(-6.40f + jitter(i * 3, 0.10f), CEIL_Y - 0.62f, z), 0.62f);
-        drawCeilingFixture(world * translate(6.40f + jitter(i * 3 + 1, 0.10f), CEIL_Y - 0.62f, z + 0.55f), 0.62f);
+        for (int i = 0; i < 4; ++i)
+        {
+            float z = -9.6f + static_cast<float>(i) * 5.20f;
+            drawCeilingFixture(world * translate(-6.40f + jitter(i * 3, 0.10f), CEIL_Y - 0.62f, z), 0.62f);
+            drawCeilingFixture(world * translate(6.40f + jitter(i * 3 + 1, 0.10f), CEIL_Y - 0.62f, z + 0.55f), 0.62f);
+        }
     }
+
+    // ---- Curve-based geometry: three coiled air lines on ceiling reels ------
+    // These are the only objects in the scene whose shape comes from an
+    // EQUATION rather than from a transformed primitive - each hose is a tube
+    // swept along a cubic Bezier.  See Scene::drawBezierHose.
+    drawExtractionHose(world * translate(-9.20f, CEIL_Y - 0.30f, -6.40f), 1);
+    drawExtractionHose(world * translate(-9.20f, CEIL_Y - 0.30f,  3.10f), 2);
+    drawExtractionHose(world * translate( 9.60f, CEIL_Y - 0.30f, -4.20f), 3);
 
     // Three overhead pipe runs.
     drawPipeRun(world * translate(-11.60f, CEIL_Y - 0.55f, 0.0f), 22.0f, 1);
@@ -3153,3 +4316,30 @@ void Scene::drawScene(float doorOffset,
     }
 }
 
+
+// A coiled air line on a ceiling reel.  The two inner control points are
+// placed below the end points, which is what makes the hose sag.
+void Scene::drawExtractionHose(const Mat4& parent, int index)
+{
+    const Vec3 hose(0.085f, 0.090f, 0.098f);
+    const float sag = 1.45f + hash01(index * 7 + 3) * 0.75f;
+    const float swing = jitter(index * 11 + 5, 0.55f);
+
+    // Reel body on the ceiling.
+    drawCylS(parent * translate(0.0f, -0.20f, 0.0f) * rotateX(90.0f) * scale(0.62f, 0.26f, 0.62f),
+             C_ROBOT_DARK, 0.0f, 0.35f, 0.55f, MAT_PAINTED_METAL);
+    drawCylS(parent * translate(0.0f, -0.20f, 0.0f) * rotateX(90.0f) * scale(0.30f, 0.30f, 0.30f),
+             C_GALV, 0.0f, 0.55f, 0.45f, MAT_GALV);
+
+    // The hose itself: one cubic Bezier from the reel down to a wall clip.
+    drawBezierHose(parent,
+        Vec3(0.0f, -0.34f, 0.0f),
+        Vec3(0.35f + swing, -0.34f - sag, 0.55f),
+        Vec3(1.05f + swing, -0.62f - sag, 1.15f),
+        Vec3(1.30f, -2.35f, 1.30f),
+        0.055f, 14, hose, MAT_RUBBER);
+
+    // Nozzle on the free end.
+    drawCylS(parent * translate(1.30f, -2.46f, 1.30f) * scale(0.11f, 0.26f, 0.11f),
+             C_CHROME * 0.75f, 0.0f, 0.70f, 0.38f, MAT_CHROME);
+}

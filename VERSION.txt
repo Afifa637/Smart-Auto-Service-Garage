@@ -1,0 +1,3 @@
+SmartGarage AUTO SERVICE v6 - Cybertruck Realism / PBR Rendering
+
+See V6_REALISM_AND_RENDERING.md for the full analysis and change list.

@@ -1,0 +1,33 @@
+SMARTGARAGE AUTO SERVICE V4 - FINAL ALIGNMENT FIX
+
+What changed
+------------
+1. Surface tool orientation corrected mathematically.
+   The scanner, cleaning sponge and polisher now face the Cybertruck side panel
+   instead of pointing downward or letting the wrist/head pass through the body.
+
+2. Surface poses calibrated to the actual rendered service patch.
+   Target panel is the left side of the service Cybertruck around x=-1.10 with
+   the sweep following the same z-range used by the scan/dirt/polish effects.
+
+3. Dedicated sponge poses are now actually used.
+   The sponge extends farther than the scanner/polisher, so its six cleaning
+   poses are separately retracted to place the foam on the body surface while
+   keeping the gripper outside.
+
+4. Impact-driver positions recalibrated to the five rendered lug nuts.
+   The socket axis faces the wheel hub.  Each target is solved against the
+   actual front-left lug location, then hard-coded as a simple predefined pose.
+
+5. Wrist pitch range expanded to +/-270 degrees.
+   This is only angle wrapping for the wrist orientation.  There is still no
+   runtime inverse kinematics, physics, path planning or AI.
+
+How to run
+----------
+Open YoutubeOpenGL.slnx in Visual Studio.
+Build x64 / Rebuild Solution.
+Run with Ctrl+F5.
+Window title must contain:
+  SmartGarage AUTO SERVICE v4 - Exact Surface Alignment
+Press ENTER to start. Press R to reset.

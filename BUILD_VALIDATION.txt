@@ -1,25 +1,10 @@
-BUILD VALIDATION - REALISM FINAL
-================================
+SMARTGARAGE AUTO SERVICE V5 BUILD VALIDATION
 
-Source-level validation performed after the complete realism upgrade:
+Validated on 2026-10-01 with:
+  g++ -std=c++20 -fsyntax-only Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp glad.c -I. -ILibraries/include
 
-  g++ -std=c++20 -fsyntax-only -I./Libraries/include Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp
-  clang++ -std=c++20 -fsyntax-only -I./Libraries/include Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp
+Result: PASS (no C++ syntax errors).
 
-Result: PASS with both compilers (no C++ syntax errors).
-
-The project bundles the original Windows GLFW library (`glfw3.lib`), so the final
-GPU/runtime validation should be performed in Visual Studio on Windows:
-
-1. Open YoutubeOpenGL.slnx
-2. Select x64 + Debug or Release
-3. Build > Rebuild Solution
-4. Run the newly built executable
-
-New rendering controls:
-F5  Cook-Torrance PBR/Gouraud
-F6  material maps
-F7  normal/bump maps
-F8  PCF shadows
-F9  cubemap reflections
-F10 HDR bloom
+Important runtime verification:
+The application window title must read:
+  SmartGarage AUTO SERVICE v5 - Surface Stand-Off Fix

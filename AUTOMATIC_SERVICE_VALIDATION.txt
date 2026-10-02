@@ -1,0 +1,23 @@
+AUTOMATIC SERVICE VALIDATION
+============================
+
+Source validation performed in the editing environment:
+
+  g++ -std=c++20 -fsyntax-only -I./Libraries/include \
+      Main.cpp SceneObjects.cpp Primitives.cpp Shader.cpp glad.c
+
+Result: PASS (no syntax errors).
+
+A full Windows/OpenGL runtime build was not executed in this environment because
+the project ships a Visual Studio solution and Windows glfw3.lib. Rebuild the
+solution in Visual Studio using x64 Debug or x64 Release before demonstration.
+
+Primary modified source files:
+- Main.cpp
+- SceneObjects.cpp
+- SceneObjects.h
+- READ_ME_FIRST.txt
+
+Added documentation:
+- AUTOMATIC_SERVICE_GUIDE.txt
+- AUTOMATIC_SERVICE_VALIDATION.txt

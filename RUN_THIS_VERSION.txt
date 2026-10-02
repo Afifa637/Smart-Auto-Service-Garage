@@ -1,0 +1,12 @@
+RUN SMARTGARAGE AUTO SERVICE V5
+
+1. Open YoutubeOpenGL.slnx in Visual Studio.
+2. Select x64.
+3. Build -> Rebuild Solution.
+4. Run the rebuilt application (Ctrl+F5).
+5. Confirm the window title says:
+   SmartGarage AUTO SERVICE v5 - Surface Stand-Off Fix
+6. Press ENTER to start the automatic service.
+
+V5 change: only the side-panel scan/clean/polish poses were moved slightly
+away from the vehicle. Wheel service and all other positions are unchanged.

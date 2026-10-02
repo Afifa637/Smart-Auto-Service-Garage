@@ -1,0 +1,24 @@
+SMARTGARAGE AUTO SERVICE V5 - SURFACE STAND-OFF FIX
+
+Change requested:
+The tool head was correctly facing the Cybertruck, but it sat slightly inside
+the side surface during scanning, cleaning and polishing.
+
+Final correction:
+- Preserved all V4 tool orientations, pass directions, heights, timing, wheel
+  service positions and tool-station positions.
+- Retracted ONLY the side-panel scan/polish poses and sponge-cleaning poses by
+  approximately 0.18 m toward the robot pedestal.
+- This gives the end-effector a small visual clearance so the head remains just
+  outside the body surface throughout the complete action.
+- Wheel impact-driver poses are unchanged.
+- No inverse kinematics, AI, physics or collision system was added.
+
+Expected window title:
+  SmartGarage AUTO SERVICE v5 - Surface Stand-Off Fix
+
+Run:
+1. Open the Visual Studio solution.
+2. Rebuild x64.
+3. Run the rebuilt executable.
+4. Press ENTER to start the automated service.
