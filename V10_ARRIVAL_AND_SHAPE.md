@@ -383,3 +383,34 @@ windscreen scanner lenses 0.12-0.16 m off the surface, and two rear-quarter
 poses had always sat 35 mm off the top of the rear tyre. All four were backed
 off along their own viewing axes to the 0.22 m stand-off with their aim kept.
 Every service pose's arm links now stay at least 0.475 m from the body.
+
+## 13. v10.5 — raised in place, self-collision, wheel wells
+
+**The arm rises where it is.** The platform pose no longer swings the base
+round to face away from the vehicle; that was a long rotation that achieved
+nothing. The arm pulls back off the panel and raises at the yaw it was already
+working at: mast vertical, boom level at 5.55 m over the vehicle, which turns
+beneath it. Verified from both entry yaws (-39 and -16 degrees) at every turn
+angle from 0 to 180: 1.33 m above the body's highest point, 0.91 m from the
+ceiling fixtures and the rest of the scenery. Going from this pose to the tool
+rack is staged (swing high, then lower): done as one move, the 135-degree
+swing combined with the drop cut through the ceiling fixtures.
+
+**Self-collision.** `robotPoseSafe()` - which gates the manual arm keys and
+the lift interlock - now rejects:
+
+- a wrist pitch within 50 degrees of 0 (mod 360). The tool hangs along the
+  wrist frame's -Y, which is the direction the forearm runs back toward the
+  elbow, so tilting the head toward 0 folds it into its own forearm. Every
+  scripted pose uses at least 60.
+- the tool segment coming within 0.32 m of the upper arm.
+
+It also now knows about scenery it previously ignored: the turntable disc
+(radius 2.10 m, wider than the 1.62 m lift box it was checked against), the
+approach ramp, the hydraulic power pack and the ceiling fixtures. HOME and
+every other resting pose were checked against the new rules, so the lift
+interlock cannot stall the service.
+
+**Wheel wells.** Inside each arch, behind the tyre, the bright stainless skin
+showed through the gap. Each arch now has a matte near-black liner filling
+its inner outline, so the opening reads as a dark cavity.

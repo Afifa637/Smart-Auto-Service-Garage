@@ -384,37 +384,40 @@ static const RobotPose POSE_SCAN_OUT       = {   -7.70f,   34.79f,  -129.51f,  1
 // the whole traverse off the paint.
 
 // ---------------------------------------------------------------------------
-//  PLATFORM ROTATION: THE ARM GOES UP AND OUT OF THE WAY
+//  PLATFORM ROTATION: THE ARM GOES UP, WHERE IT ALREADY IS
 //
 //  Turning the vehicle about the lift axis sweeps a CYLINDER of radius
 //  sqrt(2.84^2 + 1.03^2) = 3.02 m - the corners reach 2 m further toward the
-//  robot than the parked body does.  Nothing of the arm may be inside that
-//  cylinder below the roof line while the plate turns.
+//  robot than the parked body does - so the arm has to be out of that volume
+//  below the roof line while the plate turns.
 //
-//  POSE_PLATFORM_UP stands the shoulder link vertical over its own base and
-//  lays the forearm flat at 5.55 m, pointing AWAY from the vehicle out over
-//  the tool rack, with the tool held level along it.  Every link is either
-//  4.6 m from the lift axis (the mast, which is on the base) or 1.6 m above
-//  the highest point of the vehicle (the boom) - verified against the car at
-//  every yaw from 0 to 180 degrees: 1.33 m clear of the body, 0.91 m clear of
-//  the ceiling fixtures, rear lifts and rack.  The 7 m ceiling is what limits
-//  the height: the two links together are 8.5 m long, so "fully up" means a
-//  vertical mast with a horizontal boom, not a vertical arm.
+//  It does not have to be out of it ABOVE the roof line.  The shoulder link
+//  stands vertical over its base and the forearm lies level at 5.55 m, at the
+//  SAME yaw the arm was already working at, so the boom simply rises and
+//  stays over the vehicle while the vehicle turns beneath it.  Swinging the
+//  base round to face the other way (an earlier version) bought nothing but a
+//  long, slow, pointless rotation.  Verified against the car at every turn
+//  angle from 0 to 180 degrees, from both yaws the arm reaches this from:
+//  1.33 m clear of the highest point of the body, 0.91 m clear of the ceiling
+//  fixtures, rear lifts and rack.  The 7 m ceiling is what sets the height:
+//  the two links total 8.5 m, so "fully up" means a vertical mast with a
+//  level boom, not a vertical arm.
 //
-//  The arm is BROUGHT here in three moves (moveToPlatformSafe):
+//  Reached in two moves (moveToPlatformSafe) and left in three
+//  (platformDescend):
 //
-//    1. pull back  - the shoulder leans 25 degrees away from the vehicle,
-//                    which draws the tool straight off the panel it was on;
-//    2. raise      - at the same yaw, mast vertical and boom level;
-//    3. swing      - only now, with everything high, the base turns to 180.
+//    up:    1. pull back - shoulder leans 25 degrees away, drawing the tool
+//                          straight off the panel it was on;
+//           2. raise     - mast vertical, boom level, same yaw.
+//    down:  1. swing     - to the next pose's yaw, while still high;
+//           2. lower     - into the working shape, still leaning back;
+//           3. lean in   - onto the panel.
 //
-//  and taken back down the same way in reverse (platformDescend).  Doing it
-//  as one interpolated move is what caused the collisions: moving yaw,
-//  shoulder, elbow and wrist together lets the tool cut a path through
-//  whatever is beside the arm, and after the 180-degree turn that is the
-//  vehicle's NOSE, not the tail the poses were first tried against.
+//  Doing it as one interpolated move is what caused collisions: moving every
+//  joint at once lets the tool cut through whatever is beside the arm, and
+//  after the 180-degree turn that is the vehicle's NOSE, not the tail.
 // ---------------------------------------------------------------------------
-static const RobotPose POSE_PLATFORM_UP = { 180.00f, 0.00f, -90.00f, 180.00f, 0.0f };
+static const RobotPose POSE_PLATFORM_UP = { 0.00f, 0.00f, -90.00f, 180.00f, 0.0f };  // yaw: unchanged
 static const float kPlatformPullBack = 25.0f;   // shoulder lean, degrees
 static const RobotPose POSE_SIDE_RETRACT   = {   -3.55f,   10.90f,  -139.01f,  218.11f, 0.0f };
 
@@ -759,10 +762,17 @@ static bool moveToPlatformSafe(float dt, float speedScale = 0.95f)
     {
         const RobotPose raised = { gPlatformFrom.yaw, POSE_PLATFORM_UP.joint1,
                                    POSE_PLATFORM_UP.joint2, POSE_PLATFORM_UP.wristPitch, 0.0f };
-        if (moveRobotTowardPose(raised, dt, speedScale)) gServiceWaypoint = 2;
-        return false;
+        return moveRobotTowardPose(raised, dt, speedScale);   // up, same yaw - done
     }
-    return moveRobotTowardPose(POSE_PLATFORM_UP, dt, speedScale);
+    return true;
+}
+
+// True when the arm is in the raised platform shape (at any yaw).
+static bool armIsRaised()
+{
+    return std::fabs(gJoint1Angle - POSE_PLATFORM_UP.joint1) < 0.5f &&
+           std::fabs(gJoint2Angle - POSE_PLATFORM_UP.joint2) < 0.5f &&
+           std::fabs(shortestAngleDelta(gWristPitch, POSE_PLATFORM_UP.wristPitch)) < 0.5f;
 }
 
 // The reverse: from POSE_PLATFORM_UP down onto a working pose.  `stage` is
@@ -815,6 +825,17 @@ static bool runToolChange(int nextTool, float dt)
     {
     case 0:     // clear of the vehicle, over the rack
         gToolChangeFrom = (gRobotTool >= 0) ? gRobotTool : nextTool;
+        // Coming straight from the raised platform pose, the move to the rack
+        // is a 135-degree swing combined with a drop, which cuts through the
+        // ceiling fixtures on the way.  Swing round high first, then lower.
+        if (gServiceWaypoint == 0 && armIsRaised())
+        {
+            const RobotPose overRack = { POSE_RACK_SAFE.yaw, POSE_PLATFORM_UP.joint1,
+                                         POSE_PLATFORM_UP.joint2, POSE_PLATFORM_UP.wristPitch, 0.0f };
+            if (moveRobotTowardPose(overRack, dt, 1.10f)) gServiceWaypoint = 1;
+            break;
+        }
+        gServiceWaypoint = 1;
         if (moveRobotTowardPose(POSE_RACK_SAFE, dt, 1.25f)) nextServicePhase();
         break;
     case 1:     // line up over the dock this tool came from
@@ -1449,6 +1470,30 @@ struct SafetyAABB
     Vec3 mx;
 };
 
+// Shortest distance between two line segments, for arm self-collision.
+static float segmentSegmentDistance(const Vec3& p0, const Vec3& p1, const Vec3& q0, const Vec3& q1)
+{
+    const Vec3 d1 = p1 - p0, d2 = q1 - q0, r = p0 - q0;
+    const float a = dot(d1, d1), e = dot(d2, d2), f = dot(d2, r);
+    float s, t;
+    if (a < 1e-8f && e < 1e-8f) return length(r);
+    if (a < 1e-8f) { s = 0.0f; t = clampf(f / e, 0.0f, 1.0f); }
+    else
+    {
+        const float c = dot(d1, r);
+        if (e < 1e-8f) { t = 0.0f; s = clampf(-c / a, 0.0f, 1.0f); }
+        else
+        {
+            const float b = dot(d1, d2), den = a * e - b * b;
+            s = (den > 1e-8f) ? clampf((b * f - c * e) / den, 0.0f, 1.0f) : 0.0f;
+            t = (b * s + f) / e;
+            if (t < 0.0f)      { t = 0.0f; s = clampf(-c / a, 0.0f, 1.0f); }
+            else if (t > 1.0f) { t = 1.0f; s = clampf((b - c) / a, 0.0f, 1.0f); }
+        }
+    }
+    return length((p0 + d1 * s) - (q0 + d2 * t));
+}
+
 static bool segmentHitsAABB(const Vec3& a, const Vec3& b, const SafetyAABB& box, float radius)
 {
     Vec3 mn = box.mn - Vec3(radius);
@@ -1551,6 +1596,18 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
         if (pts[i].z < -12.20f || pts[i].z > 12.20f) return false;
     }
 
+    // ---- self-collision ---------------------------------------------------
+    //  The tool hangs along the wrist frame's -Y, which is exactly the
+    //  direction the forearm runs back toward the elbow; so a wrist pitch near
+    //  0 (mod 360) folds the tool head straight into its own forearm.  Keep at
+    //  least 50 degrees between them - every scripted pose uses 60 or more.
+    {
+        const float fold = std::fabs(shortestAngleDelta(0.0f, wristPitch));
+        if (fold < 50.0f) return false;
+        // ...and the tool must never swing back into the upper arm.
+        if (segmentSegmentDistance(w, t, s, e) < 0.32f) return false;
+    }
+
     const SafetyAABB pedestal = { Vec3(-5.47f, 0.0f, -3.07f), Vec3(-3.73f, 0.82f, -1.33f) };
 
     // The table SOLID only, up to its top surface.  It used to be a 2.1 m tall
@@ -1596,7 +1653,13 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
 
     if (gTeachObject == TEACH_SCENE)
     {
-        const SafetyAABB hardBoxes[] = { toolStation, rearLiftA, rearLiftB };
+        // Fixed scenery the arm can physically reach.
+        const SafetyAABB powerPack  = { Vec3(-4.81f, 0.0f, -4.17f), Vec3(-4.29f, 1.20f, -3.73f) };
+        const SafetyAABB liftRamp   = { Vec3(-1.50f, 0.0f,  0.55f), Vec3( 1.50f, 1.12f,  5.30f) };
+        const SafetyAABB fixtureA   = { Vec3(-7.21f, 6.30f, -4.55f), Vec3(-5.59f, 7.00f, -4.25f) };
+        const SafetyAABB fixtureB   = { Vec3(-7.21f, 6.30f,  0.65f), Vec3(-5.59f, 7.00f,  0.95f) };
+        const SafetyAABB hardBoxes[] = { toolStation, rearLiftA, rearLiftB, powerPack, liftRamp,
+                                         fixtureA, fixtureB };
         for (int i = 0; i < static_cast<int>(sizeof(hardBoxes) / sizeof(hardBoxes[0])); ++i)
         {
             if (segmentHitsAABB(s, e, hardBoxes[i], 0.20f)) return false;
@@ -1607,6 +1670,22 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
         if (segmentHitsAABB(s, e, centralLift, 0.20f) ||
             segmentHitsAABB(e, w, centralLift, 0.18f) ||
             segmentHitsAABB(w, t, centralLift, 0.22f)) return false;
+
+        // The turntable disc overhangs the lift frame: radius 2.10 m about the
+        // lift axis, at platform height.
+        {
+            const Vec3 segA[3] = { s, e, w }, segB[3] = { e, w, t };
+            const float rad[3] = { 0.20f, 0.18f, 0.22f };
+            const float discTop = carY + 0.006f;
+            for (int k = 0; k < 3; ++k)
+                for (int i = 0; i <= 12; ++i)
+                {
+                    const Vec3 p = segA[k] + (segB[k] - segA[k]) * (static_cast<float>(i) / 12.0f);
+                    const float rr = std::sqrt(p.x * p.x + (p.z + 2.0f) * (p.z + 2.0f));
+                    if (rr < 2.10f + rad[k] && p.y < discTop + rad[k] && p.y > discTop - 0.17f - rad[k])
+                        return false;
+                }
+        }
 
         // The upper arm is never allowed near the vehicle at all.
         if (segmentHitsAABB(s, e, centralTruck, 0.20f)) return false;

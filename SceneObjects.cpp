@@ -2735,6 +2735,29 @@ namespace
         truckPushFiveFacetFender(fenders, -1, CAR_RAXLE_Z, CAR_RWHEEL_R);
         truckPushFiveFacetFender(fenders,  1, CAR_RAXLE_Z, CAR_RWHEEL_R);
 
+        // Wheel-well liners.  Inside each arch opening, behind the tyre, the
+        // real truck shows a dark cavity; the model showed the bright stainless
+        // skin straight through the gap over the tyre.  Each liner is the arch
+        // trim's own inner outline (convex), filled a few mm outboard of the
+        // skin in the matte near-black recess colour.
+        for (int w = 0; w < 4; ++w)
+        {
+            const float sx = (w & 1) ? 1.0f : -1.0f;
+            const float axleZ = (w < 2) ? CAR_FAXLE_Z : CAR_RAXLE_Z;
+            const float R = (w < 2) ? CAR_FWHEEL_R : CAR_RWHEEL_R;
+            const float x = sx * (CT_X_BODY + 0.004f);
+            const float yz[8][2] = {
+                { 0.235f, -0.595f }, { R + 0.015f, -0.570f }, { R + 0.280f, -0.475f },
+                { R + 0.505f, -0.268f }, { R + 0.505f, 0.268f }, { R + 0.280f, 0.475f },
+                { R + 0.015f, 0.570f }, { 0.235f, 0.595f } };
+            const Vec3 n(sx, 0.0f, 0.0f);
+            for (int i = 1; i + 1 < 8; ++i)
+                truckPushTriN(lightRecess,
+                    Vec3(x, yz[0][0],     axleZ + yz[0][1]),
+                    Vec3(x, yz[i][0],     axleZ + yz[i][1]),
+                    Vec3(x, yz[i + 1][0], axleZ + yz[i + 1][1]), n);
+        }
+
         // ------------------------------------------------------------------
         //  BUMPERS - full 3D blocks that project past the shell.
         // ------------------------------------------------------------------
