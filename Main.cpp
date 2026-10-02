@@ -1889,10 +1889,10 @@ struct ReelKey { float t; Vec3 eye; Vec3 look; float fov; };
 //  (see reelApplyCamera), so it stays framed wherever it has got to.
 static const ReelKey kReelKeys[] = {
     // ---- 0-6 s: outside, the vehicle waiting on the apron ---------------
-    {   0.0f, Vec3(  8.5f, 2.9f, 23.0f), Vec3( 0.0f, 1.3f, 16.4f), 52.0f },
-    {   5.0f, Vec3(  6.0f, 2.0f, 21.5f), Vec3( 0.0f, 1.2f, 16.2f), 44.0f },
-    // 6-30 s is the tracked arrival; these two only bracket it.
-    {   6.0f, Vec3(  6.0f, 2.0f, 21.0f), Vec3( 0.0f, 1.2f, 16.0f), 44.0f },
+    {   0.0f, Vec3(  9.0f, 2.8f, 24.5f), Vec3( 0.0f, 1.1f, 16.3f), 50.0f },
+    {   5.0f, Vec3(  7.4f, 1.9f, 21.0f), Vec3( 0.0f, 0.95f, 16.1f), 46.0f },
+    // 0-30 s is the tracked arrival; these only bracket it.
+    {   6.0f, Vec3(  7.4f, 1.9f, 21.0f), Vec3( 0.0f, 0.95f, 16.1f), 46.0f },
     {  30.0f, Vec3(  7.5f, 3.2f,  3.0f), Vec3( 0.0f, 2.0f, -2.0f), 48.0f },
     // ---- 30-44 s: the lift raises; projection toggle ---------------------
     // The orthographic box is as tall as the perspective frustum is at the
@@ -1931,13 +1931,13 @@ static const ReelKey kReelKeys[] = {
 // the ramp climb in frame without the operator having to guess the timing.
 static bool reelTrackArrival(float t)
 {
-    if (t < 6.0f || t > 30.0f) return false;
+    if (t > 30.0f) return false;
 
     const float carZ = -2.00f + Scene::carDriveDistance() * gSwitches.carDrive;
     const float carY = Scene::liftTopY(gLiftHeight) * (1.0f - gSwitches.carDrive);
 
     // Ease the rig in and out so the hand-off to the keyframes is not a cut.
-    float u = (t - 6.0f) / 3.0f;                 // 3 s to take over
+    float u = t / 2.0f;                          // 2 s to take over
     u = clampf(u, 0.0f, 1.0f);
     float v = (30.0f - t) / 4.0f;                // 4 s to hand back
     v = clampf(v, 0.0f, 1.0f);
@@ -1948,15 +1948,23 @@ static bool reelTrackArrival(float t)
     // attitude only reads in profile - from behind, a vehicle tilting nose-up
     // just gets shorter.
     //
-    //  The camera has to STAY INSIDE THE BUILDING.  The clear door opening is
-    //  13 m wide, so a rig riding abeam at x = 8.4 is looking at the vehicle
-    //  through 1.9 m of front wall for the whole time it is on the apron - the
-    //  shot goes black.  Clamping the camera's z to the inside of the
-    //  threshold keeps the sight line within the opening: from (7.4, ., 9.0)
-    //  to a vehicle at z = 16, the ray crosses the door plane at x = 2.8.
-    const float eyeZ = clampf(carZ + 3.0f, -1.0f, 9.0f);
+    //  THE RIG HAS TO THREAD THE DOORWAY.  The vehicle starts on the apron and
+    //  ends 18.5 m away inside the building, so the camera has to come in with
+    //  it - and the only legal way through the front wall is the 13 m opening.
+    //  A rig riding abeam at x = 7.4 crosses that wall 0.9 m outside the post
+    //  and the shot fills with concrete.
+    //
+    //  So the camera's x is narrowed as it approaches the threshold: 2.6 m off
+    //  the centreline at the door plane, opening back out to 7.4 m once it is
+    //  five metres clear on either side.  The z simply trails the vehicle.
+    const float kThresholdZ = 13.40f;
+    const float eyeZ = clampf(carZ + 4.50f, -1.0f, 24.0f);
+    float openness = std::fabs(eyeZ - kThresholdZ) / 5.0f;
+    openness = clampf(openness, 0.0f, 1.0f);
+    const float eyeX = 2.60f + 4.80f * openness;
+
     const Vec3 look(0.0f, carY + 0.95f, carZ - 0.40f);
-    const Vec3 eye(7.40f, carY + 1.90f, eyeZ);
+    const Vec3 eye(eyeX, carY + 1.90f, eyeZ);
 
     const int n = static_cast<int>(sizeof(kReelKeys) / sizeof(kReelKeys[0]));
     int i = 0;
