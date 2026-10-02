@@ -83,15 +83,11 @@ namespace Scene
         bool  vehicleLights  = true;   // front + rear light bars (a DRL: on by default)
         bool  hazardBeacon   = false;  // flashing amber bay beacon
         float fanSpeed       = 1.0f;   // 0 = stopped .. 2 = fast
-        float carDrive       = 0.0f;   // 0 = on the lift, 1 = out on the apron
+        // Where the vehicle is along its arrival run.  1 = waiting outside on
+        // the apron, facing the door; 0 = parked on the lift.  The scene starts
+        // at 1, so the first thing the demonstration does is bring it in.
+        float carDrive       = 1.0f;
         float wheelSpin      = 0.0f;   // degrees, rolls with carDrive
-
-        // A vehicle crossing the road outside, left to right.  Its wheel spin
-        // is derived from the distance it has covered, exactly as the serviced
-        // car's is, so it reads as driving rather than sliding.
-        bool  trafficOn      = true;
-        float trafficX       = -16.0f; // world X of the passing vehicle
-        float trafficSpin    = 0.0f;   // degrees
     };
 
     void setSwitches(const SceneSwitches& s);
@@ -180,6 +176,14 @@ namespace Scene
     void drawGarage(const Mat4& parent);
     void drawGarageDoor(const Mat4& parent, float doorOffset);
     void drawHydraulicLift(const Mat4& parent, float liftHeight);
+
+    // Floor-mounted approach ramp at the front of the main lift.  Bolted to
+    // the slab, so it does not rise with the platform.
+    void drawLiftApproachRamp(const Mat4& parent);
+
+    // How far the vehicle travels between the apron and the lift, in metres.
+    // Main.cpp needs it to roll the wheels by the distance actually covered.
+    float carDriveDistance();
     // `bodyColor` is the only difference between the five cars in the scene.
     // One model, five paint jobs - no extra geometry of any kind.
     //  `sidePolish` (0..1) polishes ONLY the side body panels, which is what
@@ -265,7 +269,7 @@ namespace Scene
                         float radius, int segments, const Vec3& color,
                         int materialType = -1);
 
-    void drawExtractionHose(const Mat4& parent, int index);
+    void drawLiftHydraulicHose(const Mat4& parent, int index);
     void drawCeilingFixture(const Mat4& parent, float dropLen);
     void drawDrainPanStack(const Mat4& parent, int count, int index);
     void drawJerryCan(const Mat4& parent, int index);

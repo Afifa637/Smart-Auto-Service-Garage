@@ -15,12 +15,12 @@ than asserted. Press `V` at any time for a full render report in the console.
 | **Cylinder** | Two detail levels, 28- and 48-segment | `6` and `7` |
 | **Sphere** | UV sphere, used for joints, bulbs, the sponge | `8` |
 | **General 3D object** | The Cybertruck shell — a custom-built triangle mesh, not a primitive | `2`, then `N`/`B` to step through its 10 build stages |
-| **Curved objects** | Cubic **Bézier**-swept air hoses on the ceiling reels | look up at the reels; `L` shows the swept tube segments |
+| **Curved objects** | Cubic **Bézier**-swept hydraulic hoses at the lift's power pack | look beside the lift base; `L` shows the swept tube segments |
 | **Textures** | 4-layer `GL_TEXTURE_2D_ARRAY`, triplanar, mipmapped, 8× anisotropic | `F6` toggles it — watch the floor and the lift runways |
 | **Shading** | Cook-Torrance GGX vs per-vertex Gouraud, same scene | `F5` |
 | **Illumination** | Split-sum image-based lighting from an HDR probe | `F9`, and `,` / `.` to scale it |
 | **Projection** | Perspective ↔ orthographic | `BACKSPACE` — runway edges converge, then go parallel |
-| **Motion** | Robot arm, lift, door, fan, turntable, passing traffic, drive-out | `ENTER`, `P`, `O`, `9`/`0`, `HOME` |
+| **Motion** | Vehicle arrival and ramp climb, robot arm, lift, door, fan, turntable | `ENTER`, `P`, `O`, `9`/`0`, `PAGE UP` |
 | **Interaction** | Full keyboard control of camera, arm, lights, tools | `TAB`, `WASD`, `T`/`G`, `U`/`J`, `I`/`K` |
 | **Collision** | Arm and lift refuse moves that would intersect the car | drive the arm into the car with `U`/`J` — it stops |
 | **Dynamic objects** | Dirt that is cleaned off, a finish that is polished, lights that switch | `ENTER` runs the whole thing |
@@ -52,6 +52,12 @@ rig), and Night.
   Euler angles suffice to aim a cylinder because it is rotationally symmetric
   about its own axis — the roll is not observable.
 
+* **A vehicle arrival.** The demonstration opens with the vehicle outside on
+  the apron and a closed door; it drives in and climbs a 4.6 m ramp at 13.2° to
+  reach the 1.08 m platform. Its height and attitude are sampled from the ramp
+  surface under each axle, so the tyres follow the deck rather than passing
+  through it. See `V10_ARRIVAL_AND_SHAPE.md`.
+
 * **An alignment turntable.** The arm is bolted beside the vehicle, so no
   amount of reach lets it aim *inward* at the far flank — a shoulder-mounted arm
   can only ever point away from its own base. The lift therefore carries a
@@ -59,20 +65,20 @@ rig), and Night.
   flank passes reuse exactly the same robot poses; the vehicle moves, not the
   robot.
 
-## 4. Deliverables still outstanding
+## 4. Deliverables
 
-These are **not code** — they are things to produce from the project:
+All three are done:
 
-1. **~10 slides**, visual-heavy: title, project idea, the graphics-concept map
-   above, screenshots with callouts, extra work, thank-you.
-2. **2-minute video** showing motion, interaction, collision and the effects.
-3. **10–15 page report** with the mathematics. The equations already written up
-   in the source and in `V6_REALISM_AND_RENDERING.md` cover: the Bézier curve
-   and its derivative, the sphere and cylinder parameterisations, the
-   transformation chain `translate · rotate · scale`, the perspective and
-   orthographic projection matrices, Cook-Torrance GGX with the split-sum
-   approximation, the shortest-angle interpolation used by the robot, and the
-   analytic two-link inverse kinematics.
+1. **12 slides**, visual-heavy, every figure rendered by the project itself.
+2. **2-minute video**, `Video/SmartGarage_Demo_2min.mp4` (1280×720) and
+   `Video/SmartGarage_Demo_2min_540p.mp4` (960×540). Rebuild either with
+   `python Video/make_video.py`.
+3. **Technical report**, 20 sections with the mathematics: the Bézier curve and
+   its derivative, the sphere and cylinder parameterisations, the
+   transformation chain `translate · rotate · scale` and the normal matrix, the
+   perspective and orthographic projection matrices, Cook-Torrance GGX with the
+   split-sum approximation, the shortest-angle interpolation used by the robot,
+   and the analytic two-link inverse kinematics.
 
 Ray tracing is deliberately **not** implemented.
 
@@ -83,6 +89,7 @@ Ray tracing is deliberately **not** implemented.
   elbow limit allows. They are inspected from above instead, in the front/hood
   and rear/bed regions.
 * The wheelbase is 3.46 m against the real 3.63 m. The axles were left where
-  they are because seventeen robot poses are calibrated against them.
+  they are because seventeen robot poses are calibrated against them, and
+  moving them would invalidate the whole collision verification for 170 mm.
 * Reflections come from a static environment probe, so they do not update when
   the garage door opens or the lights are switched off.

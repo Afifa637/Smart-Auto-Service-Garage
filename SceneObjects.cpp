@@ -682,6 +682,14 @@ static const float LIFT_REST_H = 0.58f;  // platform lift when fully lowered
 static const float LIFT_PLAT_T = 0.18f;  // blue platform beam thickness
 static const float LIFT_PAD_T = 0.10f;  // yellow runway pad thickness
 static const float LIFT_PAD_L = 5.20f;  // runway pad length along Z
+
+// ---- approach ramp ---------------------------------------------------------
+//  The platform rests 1.08 m above the floor, so a vehicle has to climb to get
+//  onto it.  4.60 m of run against 1.08 m of rise is a 13.2 degree slope, which
+//  is what a real drive-on ramp for this height looks like; anything shorter
+//  would be a kerb, not a ramp.  The ramp is bolted to the FLOOR, not to the
+//  platform, so it stays where it is when the lift rises.
+static const float LIFT_RAMP_LEN = 4.60f;  // run, floor to platform edge
 static const float LIFT_TRACK = 0.98f;  // half distance between the two runways
 static const float LIFT_MAX_H = 4.00f;  // travel of the animation parameter
 
@@ -716,34 +724,49 @@ static const float CAR_WHEEL_OUTSET = 0.035f; // tyres remain tucked close to th
 //  exactly - if any of them carried its own copy of a number the panels would
 //  drift apart and the folds would stop lining up.
 //
-//  The single most important property of the real vehicle is that the hood and
-//  the windscreen form ONE almost unbroken straight line from the front bumper
-//  to the roof apex.  The old model had a nearly flat hood (slope 0.09) and
-//  then a steep windscreen (slope 0.42), which is why it read as a generic
-//  angular SUV.  Here the two slopes are 0.319 and 0.325 - visually one line,
-//  with just enough of a crease left at the cowl to catch a highlight.
+//  RE-MEASURED off Reference/03_reference_side.png, on a pixel grid, using the
+//  roof apex (1.791 m) as the vertical scale.  Three errors came out of that
+//  measurement, and between them they were why the vehicle read as an angular
+//  coupe rather than as a Cybertruck:
+//
+//   1. THE ROOF PEAK WAS TOO FAR BACK.  Measured, the apex sits at 40% of the
+//      overall length from the nose.  The model had it at 52%, almost at the
+//      midpoint, which lengthened the windscreen, shortened the rear and
+//      destroyed the forward-biased wedge that is the whole silhouette.
+//
+//   2. THE NOSE WAS 146 mm TOO LOW.  The real front is blunt and tall - the
+//      hood's leading edge is 0.95 m off the ground.  At 0.805 m the model had
+//      a drooping snout.
+//
+//   3. THE REAR WAS A FASTBACK PLUS A FLAT BED RAIL.  The model dropped 30
+//      degrees from the apex and then ran level to the tail.  The real vehicle
+//      descends in ONE continuous ~9 degree line from the apex all the way to
+//      the tailgate; the bed rail is not horizontal, it is part of the wedge.
+//      CT_ROOF_R is therefore placed ON that line, so the two rear segments of
+//      ctRoofLineY() are collinear and the silhouette is a single straight run.
+//
+//  The front is CONCAVE, not convex: the hood rises at 14 degrees and the
+//  windscreen at 28, so the cowl sits BELOW the nose-to-apex chord.  The model
+//  had this inverted, which put a brow over the hood.
 // ---------------------------------------------------------------------------
 static const float CT_NOSE_Z     = -2.760f;  // front face of the stainless shell
-static const float CT_COWL_Z     = -1.330f;  // base of the windscreen
-static const float CT_APEX_Z     =  0.110f;  // roof peak - just behind the axle midpoint
-static const float CT_ROOF_R_Z   =  0.520f;  // rear edge of the cab roof (short flat)
-static const float CT_BACKLIGHT_Z=  0.950f;  // bottom of the rear screen
-static const float CT_BED_FRONT_Z=  1.040f;  // front wall of the vault / tonneau
+static const float CT_COWL_Z     = -1.540f;  // base of the windscreen
+static const float CT_APEX_Z     = -0.545f;  // roof peak, at 40% of the length
+static const float CT_ROOF_R_Z   =  0.000f;  // rear edge of the cab roof
+static const float CT_BACKLIGHT_Z=  0.620f;  // bottom of the rear screen
+static const float CT_BED_FRONT_Z=  0.760f;  // front wall of the vault / tonneau
 static const float CT_TAIL_Z     =  2.800f;  // tailgate plane
 
 static const float CT_FLOOR_Y      = 0.300f; // rocker underside at the nose
 static const float CT_FLOOR_REAR_Y = 0.410f; // rocker underside at the tail
-static const float CT_NOSE_TOP_Y   = 0.805f; // top of the front fascia
-// MEASURED OFF THE SIDE REFERENCE.  The real vehicle's hood is STEEPER than
-// its windscreen (slopes 0.394 and 0.311); the project had that inverted
-// (0.319 and 0.366), which left the cowl 144 mm too low.  The visible effect
-// was a long shallow hood with a tall pinched cabin sitting behind it.
-static const float CT_COWL_Y       = 1.370f; // windscreen base
-static const float CT_BELT_Y       = 1.105f; // belt line / bottom of the glazing
-static const float CT_APEX_Y       = 1.790f; // roof apex - the real car is 1.791 m tall
-static const float CT_ROOF_R_Y     = 1.752f;
-static const float CT_BACKLIGHT_Y  = 1.480f;
-static const float CT_BED_RAIL_Y   = 1.255f; // bed rail / tonneau height
+static const float CT_NOSE_TOP_Y   = 0.951f; // top of the front fascia (measured)
+static const float CT_COWL_Y       = 1.254f; // windscreen base (measured)
+static const float CT_BELT_Y       = 1.150f; // belt line / bottom of the glazing
+static const float CT_APEX_Y       = 1.791f; // roof apex - the real car is 1.791 m tall
+// On the apex -> tail line, so the rear silhouette is one unbroken straight run.
+static const float CT_ROOF_R_Y     = 1.704f;
+static const float CT_BACKLIGHT_Y  = 1.455f;
+static const float CT_BED_RAIL_Y   = 1.260f; // bed rail AT THE TAIL - the rail slopes
 static const float CT_TAIL_BOT_Y   = 0.430f;
 
 static const float CT_X_BODY  = 1.030f;  // half width of the stainless side skin
@@ -755,10 +778,12 @@ static const float CT_X_ROOF  = 0.992f;  // roof and tonneau half width
 // The greenhouse is short and sits well forward: behind the rear door glass
 // the Cybertruck carries an unusually large stainless sail panel, and getting
 // that proportion right matters more to the silhouette than any other detail.
-static const float CT_DLO_FRONT_Z    = -1.150f; // front bottom corner, on the belt
-static const float CT_DLO_REAR_Z     =  0.760f; // rear bottom corner, on the belt
-static const float CT_DLO_REAR_TOP_Z =  0.480f; // rear top corner, under the roof rail
-static const float CT_B_PILLAR_Z     = -0.230f;
+// These move forward with the apex.  The cabin sits AHEAD of the roof peak on
+// this vehicle, and behind it is the long stainless sail panel.
+static const float CT_DLO_FRONT_Z    = -1.380f; // front bottom corner, on the belt
+static const float CT_DLO_REAR_Z     =  0.540f; // rear bottom corner, on the belt
+static const float CT_DLO_REAR_TOP_Z =  0.080f; // rear top corner, under the roof rail
+static const float CT_B_PILLAR_Z     = -0.560f;
 static const float CT_B_PILLAR_HALF  =  0.028f;
 static const float CT_ROOF_RAIL_T    =  0.088f; // stainless left above the glass
 
@@ -792,7 +817,10 @@ static float ctBeltCrossZ()
 // How far the serviced vehicle rolls when it drives out of the bay.  The lift
 // sits at z = -2.0 and the door opening is at z = 13.2, so 17.5 m carries the
 // truck cleanly through the doorway and onto the apron outside.
-static const float CAR_DRIVE_DISTANCE = 17.50f;
+// carDrive = 1 puts the vehicle's centre at LIFT_Z + this, i.e. world z 16.5.
+// The body runs from z 13.74 to 19.30, which is the apron (13.4 .. 19.4) - the
+// vehicle waits squarely in front of the door, nose toward it, fully outside.
+static const float CAR_DRIVE_DISTANCE = 18.50f;
 
 static const float PARK_X = 10.60f;  // centre line of a parked car
 static const float PARK_BAY_W = 3.10f;   // bay width  (across the aisle, along Z)
@@ -1352,29 +1380,19 @@ void Scene::drawExterior(const Mat4& parent)
     drawCube(parent * place(Vec3(-5.2f, 0.007f, TH + APRON_D * 0.5f), Vec3(0.055f, 0.016f, APRON_D)), C_APRON_DARK);
     drawCube(parent * place(Vec3(5.2f, 0.007f, TH + APRON_D * 0.5f), Vec3(0.055f, 0.016f, APRON_D)), C_APRON_DARK);
 
-    // Patches of staining and old repairs, so it is not a clean slab.
-    for (int i = 0; i < 6; ++i)
-    {
-        float x = jitter(i * 5 + 1, 8.0f);
-        float z = TH + 1.4f + hash01(i * 5 + 2) * 6.0f;
-        float w = 1.0f + hash01(i * 5 + 3) * 1.8f;
-        drawCube(parent * place(Vec3(x, 0.006f, z), Vec3(w, 0.014f, w * 0.72f),
-            Vec3(0.0f, jitter(i * 5 + 4, 40.0f), 0.0f)), C_APRON_DARK * (0.90f + hash01(i * 5) * 0.12f));
-    }
+    // NOTE: the apron used to carry six grey "repair patch" slabs, three large
+    // painted approach arrows and a band of angled hatching.  At 14 to 20 mm
+    // proud of the slab they read as loose metal plates lying on the concrete
+    // rather than as paint, and the vehicle now drives across this exact strip
+    // on its way in.  The apron is left as a clean slab; the concrete texture
+    // already supplies the wear.
 
-    // ---- 2. Approach markings, faded --------------------------------------
-    drawCube(parent * place(Vec3(0.0f, 0.012f, TH + 2.10f), Vec3(11.0f, 0.020f, 0.190f)), C_WHITE_LINE * 0.88f);
-    for (int i = 0; i < 3; ++i)
-    {
-        float x = (static_cast<float>(i) - 1.0f) * 3.2f;
-        float z = TH + 4.5f;
-        drawCube(parent * place(Vec3(x, 0.012f, z), Vec3(0.230f, 0.020f, 1.55f)), C_WHITE_LINE * 0.80f);
-        drawCube(parent * place(Vec3(x - 0.255f, 0.012f, z - 0.500f), Vec3(0.220f, 0.020f, 0.760f), Vec3(0.0f, 40.0f, 0.0f)), C_WHITE_LINE * 0.80f);
-        drawCube(parent * place(Vec3(x + 0.255f, 0.012f, z - 0.500f), Vec3(0.220f, 0.020f, 0.760f), Vec3(0.0f, -40.0f, 0.0f)), C_WHITE_LINE * 0.80f);
-    }
-    for (int i = 0; i < 8; ++i)
-        drawCube(parent * place(Vec3(-4.9f + static_cast<float>(i) * 1.4f, 0.011f, TH + 1.00f),
-            Vec3(0.130f, 0.018f, 1.55f), Vec3(0.0f, 34.0f, 0.0f)), C_WHITE_LINE * 0.72f);
+    // ---- 2. The approach lane into the building ----------------------------
+    // Two edge lines, flush with the slab, marking the route the vehicle takes
+    // to the door.  Nothing here stands more than 2 mm proud.
+    for (int side = -1; side <= 1; side += 2)
+        drawCube(parent * place(Vec3(static_cast<float>(side) * 2.60f, 0.004f, TH + APRON_D * 0.5f),
+            Vec3(0.110f, 0.008f, APRON_D)), C_WHITE_LINE * 0.70f);
 
     // ---- 3. Kerb and gullies at the edge of the apron ----------------------
     drawCube(parent * place(Vec3(0.0f, 0.075f, TH + APRON_D), Vec3(COURT_HALF_W * 2.0f, 0.150f, 0.300f)), C_KERB);
@@ -1535,6 +1553,9 @@ static float scissorAngle(float liftHeight)
 
     return asinf(s);
 }
+
+
+float Scene::carDriveDistance() { return CAR_DRIVE_DISTANCE; }
 
 
 float Scene::liftTopY(float liftHeight)
@@ -1757,14 +1778,11 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
         drawCube(lift * place(Vec3(x - sx * 0.49f, topY - 0.006f, 0.0f),
             Vec3(0.020f, 0.020f, LIFT_PAD_L)), C_CHROME * 0.80f);
 
-        // Drive-on ramps, hinged at each end and sloping back down to the floor.
-        // rotateX(+9) drops the +Z end, rotateX(-9) drops the -Z end.
-        drawCube(lift * place(Vec3(x, topY - 0.06f, LIFT_PAD_L * 0.5f + 0.52f),
-            Vec3(1.00f, 0.08f, 1.10f), Vec3(9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW,
-            0.0f, 0.55f, 0.46f, MAT_TREAD);
-        drawCube(lift * place(Vec3(x, topY - 0.06f, -(LIFT_PAD_L * 0.5f + 0.52f)),
-            Vec3(1.00f, 0.08f, 1.10f), Vec3(-9.0f, 0.0f, 0.0f)), C_LIFT_YELLOW,
-            0.0f, 0.55f, 0.46f, MAT_TREAD);
+        // NOTE: short drive-on wedges used to be drawn here, hinged to the
+        // platform at each end.  They rose with it, so once the lift was up
+        // they hung in mid-air a metre off the floor.  The real approach ramp
+        // is drawLiftApproachRamp(), which is bolted to the floor and stays
+        // there.
 
         // Dark grip strips across the pad - set nearly flush so they read as
         // pressed diamond-plate texture rather than separate floating bars.
@@ -1775,6 +1793,75 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
         }
     }
 
+}
+
+
+// ============================================================================
+//  SECTION 6b - THE APPROACH RAMP
+//
+//  The platform sits LIFT_REST_H + the frame above the slab, about 1.08 m, so
+//  a vehicle has to climb to reach it.  This builds the ramp that lets it.
+//
+//  Two things make it behave: it is drawn relative to `parent` (the world),
+//  NOT to the lift, so it stays on the floor when the platform rises; and its
+//  slope is derived from the same liftTopY(0) that positions the vehicle, so
+//  the tyres follow the surface instead of passing through it.
+//
+//  A sloped slab is just a scaled cube rotated about X.  The only subtlety is
+//  that rotating a box about its centre leaves its ENDS half a thickness out
+//  of place, so the centre is positioned at the mid-height of the run and the
+//  length is the hypotenuse, not the horizontal run.
+// ============================================================================
+void Scene::drawLiftApproachRamp(const Mat4& parent)
+{
+    const float top = liftTopY(0.0f);                   // platform height at rest
+    const float run = LIFT_RAMP_LEN;
+    const float slopeDeg = std::atan2(top, run) * 180.0f / PI_F;
+    const float hyp = std::sqrt(top * top + run * run);
+
+    // The ramp meets the platform at the +Z end of the runway pad.
+    const float zTop = LIFT_Z + LIFT_PAD_L * 0.5f;
+    const float zMid = zTop + run * 0.5f;
+
+    for (int s = 0; s < 2; ++s)
+    {
+        const float sx = (s == 0) ? -1.0f : 1.0f;
+        const float x = sx * LIFT_TRACK;
+
+        // The sloped deck.  rotateX(+slope) drops the +Z end, which is the end
+        // that has to reach the floor.
+        drawCube(parent * place(Vec3(x, top * 0.5f, zMid),
+            Vec3(1.00f, 0.075f, hyp), Vec3(slopeDeg, 0.0f, 0.0f)),
+            C_LIFT_YELLOW, 0.0f, 0.55f, 0.46f, MAT_TREAD);
+
+        // Guide kerb along the outer edge, so a tyre cannot run off the side.
+        drawCube(parent * place(Vec3(x + sx * 0.47f, top * 0.5f + 0.055f, zMid),
+            Vec3(0.070f, 0.075f, hyp), Vec3(slopeDeg, 0.0f, 0.0f)),
+            C_LIFT_YELLOW * 0.88f);
+
+        // Supporting legs under the deck, three per side.
+        for (int i = 1; i <= 3; ++i)
+        {
+            const float t = static_cast<float>(i) / 4.0f;      // 0 at the top
+            const float z = zTop + run * t;
+            const float h = top * (1.0f - t);
+            if (h < 0.08f) continue;
+            drawCube(parent * place(Vec3(x, h * 0.5f, z), Vec3(0.60f, h, 0.10f)),
+                C_LIFT_BLUE_D, 0.0f, 0.35f, 0.58f);
+        }
+
+        // Toe plate where the deck meets the slab, so it does not end in a
+        // knife edge floating a few millimetres above the concrete.
+        drawCube(parent * place(Vec3(x, 0.012f, zTop + run + 0.10f),
+            Vec3(1.00f, 0.024f, 0.34f)), C_LIFT_YELLOW * 0.80f,
+            0.0f, 0.55f, 0.46f, MAT_TREAD);
+
+        // Black and yellow hazard banding across the foot of the ramp.
+        for (int i = 0; i < 6; ++i)
+            drawCube(parent * place(Vec3(x - 0.40f + static_cast<float>(i) * 0.16f, 0.026f,
+                zTop + run + 0.10f), Vec3(0.075f, 0.010f, 0.34f),
+                Vec3(0.0f, 32.0f, 0.0f)), C_LIFT_DARK);
+    }
 }
 
 
@@ -2609,8 +2696,12 @@ namespace
                     Vec3(sx * 0.6f, 0.0f, -0.8f));
             }
 
-            // Two driving-lamp clusters low in the bumper, set in their own
-            // recesses at roughly a quarter and three quarters of the width.
+            // NOTE: two bright driving-lamp clusters used to sit low in the
+            // bumper here.  The real vehicle has no such lamps - its entire
+            // front lighting is the single full-width blade above - and at
+            // this brightness the pair read unmistakably as a conventional
+            // car's headlights, which is the one thing the front must not
+            // look like.  They are left as dark recesses in the bumper.
             for (int side = -1; side <= 1; side += 2)
             {
                 const float sx = static_cast<float>(side);
@@ -2624,12 +2715,6 @@ namespace
                     Vec3(cx + hw + 0.018f, yA - 0.018f, zL + 0.004f),
                     Vec3(cx + hw + 0.018f, yB2 + 0.018f, zL + 0.004f),
                     Vec3(cx - hw - 0.018f, yB2 + 0.018f, zL + 0.004f),
-                    Vec3(0.0f, 0.0f, -1.0f));
-                truckPushQuadN(frontLight,
-                    Vec3(cx - hw, yA,  zL),
-                    Vec3(cx + hw, yA,  zL),
-                    Vec3(cx + hw, yB2, zL),
-                    Vec3(cx - hw, yB2, zL),
                     Vec3(0.0f, 0.0f, -1.0f));
             }
         }
@@ -3969,21 +4054,19 @@ static void drawServiceCarEffects(const Mat4& car, const Scene::ServiceVisualSta
     //  physically is - the flank drops from 0.40 roughness to 0.16 - and that
     //  difference is visible without being announced.
     //
-    //  The scanner beam below stays, because a line-projecting laser scanner
-    //  really does put a bright line on what it is measuring.
+    //  The projected scan line has now gone the same way.  It was a flat cyan
+    //  bar pinned to the vehicle's own local frame, so it sat on the near
+    //  flank at a fixed height whatever the scanner head was actually pointing
+    //  at - and it stayed there while the head was over the roof or the rear.
+    //
+    //  What shows where the scanner is working is the SPOTLIGHT on the tool
+    //  head: its position and direction come from the wrist transform, it
+    //  attenuates with distance and cone angle, and it casts its own shadow
+    //  map.  That is a real light doing a real job, and it cannot disagree
+    //  with where the head is, because it is derived from the same matrix.
     // ========================================================================
-    const float xSkin = -(CT_X_BODY + 0.004f);
-
-    // Line laser projected by the inspection head, with its soft bloom edge.
-    if (service.scanProgress >= 0.0f)
-    {
-        const float p = serviceClamp01(service.scanProgress);
-        const float z = -0.74f + p * 1.52f;
-        Scene::drawCube(car * Scene::place(Vec3(xSkin - 0.012f, 0.925f, z),
-            Vec3(0.014f, 0.700f, 0.045f)), C_NEON_CYAN, 0.88f, 0.0f, 0.20f, MAT_PAINT);
-        Scene::drawCube(car * Scene::place(Vec3(xSkin - 0.009f, 0.925f, z),
-            Vec3(0.010f, 0.740f, 0.115f)), C_NEON_CYAN * 0.42f, 0.28f, 0.0f, 0.35f, MAT_PAINT);
-    }
+    (void)car;
+    (void)service;
 }
 
 
@@ -4130,6 +4213,16 @@ void Scene::drawScene(float doorOffset,
     drawHydraulicLift(world * translate(-8.60f, 0.0f, 5.20f), 2.40f);
     drawHydraulicLift(world * translate(-8.60f, 0.0f, -4.60f), 0.00f);
 
+    // The approach ramp the vehicle drives up to reach the main lift.
+    drawLiftApproachRamp(world);
+
+    // The lift's power pack and its two hydraulic hoses.  These are the
+    // project's curve-based geometry: each hose is a tube swept along a cubic
+    // Bezier.  They are placed outboard of the left-hand base rail, running in
+    // toward the lift, clear of both the ramp and the robot's working volume.
+    drawLiftHydraulicHose(world * translate(-4.55f, 0.0f, LIFT_Z - 1.95f), 0);
+    drawLiftHydraulicHose(world * translate(-4.55f, 0.0f, LIFT_Z - 1.95f), 1);
+
     // ---- 5. The car under service, standing on the lift runways --------------
     // liftTopY() returns the surface the wheels stand on, so when the lift is
     // animated later the car rises with it and this line never changes.
@@ -4140,20 +4233,69 @@ void Scene::drawScene(float doorOffset,
     // one number moves the entire assembly, which is the whole point of
     // building the scene as a transform hierarchy.
     const float driveZ = CAR_DRIVE_DISTANCE * gSwitches.carDrive;
+
+    // ---- the vehicle on the approach ramp --------------------------------
+    //
+    //  The lift platform rests 1.08 m above the floor, so the vehicle cannot
+    //  slide onto it - it has to climb the approach ramp.
+    //
+    //  The height and attitude are taken from WHERE THE AXLES ARE, not from
+    //  where the body's centre is.  That distinction matters: a 5.68 m vehicle
+    //  driving onto a 4.60 m ramp has one axle on the slope and one still on
+    //  the slab for most of the climb, so a body positioned from its centre
+    //  puts the leading tyres straight through the deck.  Sampling the ramp
+    //  surface under each axle instead gives both the ride height (their mean)
+    //  and the pitch (their difference over the wheelbase) for free, and the
+    //  tyres stay on the ramp by construction.
+    const float rampTopY = liftTopY(0.0f);                  // platform at rest
+    const float rampTopZ = LIFT_Z + LIFT_PAD_L * 0.5f;      // where ramp meets pad
+    const float rampFootZ = rampTopZ + LIFT_RAMP_LEN;        // where it meets the slab
+
+    auto rampSurfaceY = [&](float z) -> float
+    {
+        if (z <= rampTopZ)  return rampTopY;
+        if (z >= rampFootZ) return 0.0f;
+        return rampTopY * (rampFootZ - z) / LIFT_RAMP_LEN;
+    };
+
+    const float carZ = LIFT_Z + driveZ;
+    const float yFront = rampSurfaceY(carZ + CAR_FAXLE_Z);
+    const float yRear = rampSurfaceY(carZ + CAR_RAXLE_Z);
+    const float wheelbase = CAR_RAXLE_Z - CAR_FAXLE_Z;
+
+    // rotateX(+a) drops the +Z end, which raises the nose - exactly what a
+    // vehicle climbing a ramp does.
+    const float carRampY = (yFront + yRear) * 0.5f - rampTopY;
+    const float carPitch = std::atan2(yFront - yRear, wheelbase) * 180.0f / PI_F;
+
     // ---- alignment turntable -------------------------------------------
     // A plate let into the runways that the vehicle stands on.  Rotating it is
     // what lets a fixed arm reach both flanks; the index marks make the motion
     // legible when it turns.
+    //
+    // The turntable belongs to the LIFT, not to the vehicle, so driveZ is
+    // deliberately not applied to it.  (It used to be, which carried the plate
+    // out of the building under the car and left a disc floating on the apron.)
+    // Its diameter covers the 3.46 m wheelbase and no more - a plate wide
+    // enough for the whole body would hang a metre into thin air on each side.
     const float turnY = liftTopY(liftHeight);
-    drawCylS(world * translate(0.0f, turnY - 0.015f, LIFT_Z + driveZ)
-        * scale(5.60f, 0.050f, 5.60f), C_LIFT_DARK * 1.25f, 0.0f, 0.55f, 0.52f, MAT_TREAD);
+    const float TURN_D = 4.20f;
+    drawCylS(world * translate(0.0f, turnY - 0.025f, LIFT_Z)
+        * scale(TURN_D, 0.050f, TURN_D), C_LIFT_DARK * 1.25f, 0.0f, 0.55f, 0.52f, MAT_TREAD);
+    // Skirt under the plate, so it reads as a thick rotating table carried by
+    // the runways rather than as a disc hanging in mid-air.
+    drawCylS(world * translate(0.0f, turnY - 0.085f, LIFT_Z)
+        * scale(TURN_D - 0.22f, 0.080f, TURN_D - 0.22f), C_LIFT_BLUE_D, 0.0f, 0.35f, 0.58f);
+    // Index marks: flat painted stripes, not raised bars.  A tyre now drives
+    // across this plate, so nothing on it may stand proud.
     for (int i = 0; i < 8; ++i)
-        drawCube(world * translate(0.0f, turnY + 0.012f, LIFT_Z + driveZ)
+        drawCube(world * translate(0.0f, turnY + 0.003f, LIFT_Z)
             * rotateY(service.carYaw + static_cast<float>(i) * 45.0f)
-            * place(Vec3(2.45f, 0.0f, 0.0f), Vec3(0.55f, 0.020f, 0.085f)),
+            * place(Vec3(1.76f, 0.0f, 0.0f), Vec3(0.46f, 0.006f, 0.075f)),
             C_LIFT_YELLOW, 0.0f, 0.0f, 0.62f, MAT_PAINT);
 
-    Mat4 serviceCar = world * translate(0.0f, turnY, LIFT_Z + driveZ)
+    Mat4 serviceCar = world * translate(0.0f, turnY + carRampY, LIFT_Z + driveZ)
+                    * rotateX(carPitch)
                     * rotateY(service.carYaw);
     drawCar(serviceCar, C_CAR_ORANGE, service.polishAmount,
             gSwitches.wheelSpin, gSwitches.vehicleLights, service.dirtAmount);
@@ -4193,23 +4335,10 @@ void Scene::drawScene(float doorOffset,
         drawWheelChock(world * translate(PARK_X + 1.60f, 0.0f, z + 0.95f) * rotateY(-90.0f), i * 2 + 5);
     }
 
-    // ---- 8. Live traffic crossing the forecourt opening -------------------------
-    // The four cars that used to sit parked on the apron are gone: they filled
-    // the doorway with static clutter.  One vehicle driving across the opening
-    // does the same job - scale, and something for the eye to settle on - and
-    // it also gives the scene continuous motion that is visible from anywhere
-    // inside the workshop.
-    //
-    // It is the SAME drawCar() as everything else, yawed 90 degrees so it faces
-    // along the road, with its wheel spin driven from the distance travelled.
-    if (gSwitches.trafficOn)
-    {
-        const float roadZ = WALL_Z + WALL_T + 6.00f + 4.00f;   // carriageway centre
-        // Keep to the near lane so the vehicle passes squarely across the door.
-        const float laneZ = roadZ - 2.10f;
-        drawCar(world * translate(gSwitches.trafficX, 0.0f, laneZ) * rotateY(90.0f),
-                C_CAR_SILVER, 0.0f, gSwitches.trafficSpin, gSwitches.vehicleLights);
-    }
+    // ---- 8. (removed) --------------------------------------------------------
+    // A second car used to drive back and forth along the road outside.  The
+    // MAIN vehicle now arrives from the road and drives into the building, so
+    // the passing car was both redundant and a distraction from the arrival.
 
     // ---- 9. Ceiling: fixtures, fans, reels, extraction, sprinklers, pipes ---------
     // 8 light fixtures in two rows of four.  The earlier 14 made the ceiling
@@ -4227,13 +4356,11 @@ void Scene::drawScene(float doorOffset,
         }
     }
 
-    // ---- Curve-based geometry: three coiled air lines on ceiling reels ------
-    // These are the only objects in the scene whose shape comes from an
-    // EQUATION rather than from a transformed primitive - each hose is a tube
-    // swept along a cubic Bezier.  See Scene::drawBezierHose.
-    drawExtractionHose(world * translate(-9.20f, CEIL_Y - 0.30f, -6.40f), 1);
-    drawExtractionHose(world * translate(-9.20f, CEIL_Y - 0.30f,  3.10f), 2);
-    drawExtractionHose(world * translate( 9.60f, CEIL_Y - 0.30f, -4.20f), 3);
+    // NOTE: three coiled air lines used to hang from ceiling reels here.  They
+    // read as black tubes dangling in the middle of the room, so they are gone.
+    // The curve-based geometry they demonstrated now lives at floor level as
+    // the lift's hydraulic hoses - see drawLiftHydraulicHose() below, which is
+    // the same cubic-Bezier sweep in a place where a hose actually belongs.
 
     // Three overhead pipe runs.
     drawPipeRun(world * translate(-11.60f, CEIL_Y - 0.55f, 0.0f), 22.0f, 1);
@@ -4319,27 +4446,52 @@ void Scene::drawScene(float doorOffset,
 
 // A coiled air line on a ceiling reel.  The two inner control points are
 // placed below the end points, which is what makes the hose sag.
-void Scene::drawExtractionHose(const Mat4& parent, int index)
+// ---------------------------------------------------------------------------
+//  The lift's hydraulic hoses - the project's curve-based geometry.
+//
+//  Everything else in this scene is a transformed cube, cylinder or sphere.
+//  These two hoses get their shape from an EQUATION: a tube swept along a
+//  cubic Bezier (Scene::drawBezierHose).
+//
+//  A hose is the honest place for a curve.  It is fixed at both ends - at the
+//  power pack and at the lift's base rail - and between them it is free, so it
+//  falls into exactly the shape a Bezier describes: through its two end points,
+//  pulled toward two interior control points it never reaches.  Putting the
+//  interior points BELOW and OUTBOARD of the ends is what makes it sag and bow
+//  out the way a pressurised hose lying on a floor does.
+// ---------------------------------------------------------------------------
+void Scene::drawLiftHydraulicHose(const Mat4& parent, int index)
 {
-    const Vec3 hose(0.085f, 0.090f, 0.098f);
-    const float sag = 1.45f + hash01(index * 7 + 3) * 0.75f;
-    const float swing = jitter(index * 11 + 5, 0.55f);
+    const Vec3 hose(0.072f, 0.076f, 0.084f);
+    const float lane = (index == 0) ? -0.16f : 0.16f;   // the two hoses run side by side
+    const float bow = 0.55f + hash01(index * 7 + 3) * 0.30f;
 
-    // Reel body on the ceiling.
-    drawCylS(parent * translate(0.0f, -0.20f, 0.0f) * rotateX(90.0f) * scale(0.62f, 0.26f, 0.62f),
-             C_ROBOT_DARK, 0.0f, 0.35f, 0.55f, MAT_PAINTED_METAL);
-    drawCylS(parent * translate(0.0f, -0.20f, 0.0f) * rotateX(90.0f) * scale(0.30f, 0.30f, 0.30f),
-             C_GALV, 0.0f, 0.55f, 0.45f, MAT_GALV);
+    // Power pack: a small motor-and-tank unit standing on the slab.
+    if (index == 0)
+    {
+        drawCube(parent * place(Vec3(0.0f, 0.46f, 0.0f), Vec3(0.52f, 0.92f, 0.44f)),
+                 C_LIFT_BLUE, 0.0f, 0.30f, 0.55f, MAT_PAINTED_METAL);
+        drawCube(parent * place(Vec3(0.0f, 0.95f, 0.0f), Vec3(0.56f, 0.06f, 0.48f)),
+                 C_LIFT_BLUE_D);
+        drawCylS(parent * translate(0.0f, 1.10f, 0.0f) * rotateZ(90.0f) * scale(0.26f, 0.44f, 0.26f),
+                 C_GALV, 0.0f, 0.55f, 0.45f, MAT_GALV);
+        drawCube(parent * place(Vec3(0.0f, 0.035f, 0.0f), Vec3(0.66f, 0.07f, 0.58f)), C_LIFT_BLUE_D);
+    }
 
-    // The hose itself: one cubic Bezier from the reel down to a wall clip.
+    // The hose: P0 at the power pack's outlet, P3 at the lift base rail.
+    // The two interior points sit low and outboard, which is what bows it.
     drawBezierHose(parent,
-        Vec3(0.0f, -0.34f, 0.0f),
-        Vec3(0.35f + swing, -0.34f - sag, 0.55f),
-        Vec3(1.05f + swing, -0.62f - sag, 1.15f),
-        Vec3(1.30f, -2.35f, 1.30f),
-        0.055f, 14, hose, MAT_RUBBER);
+        Vec3(0.20f, 0.30f + lane * 0.4f, lane),
+        Vec3(1.05f, 0.09f, lane - bow),
+        Vec3(2.20f, 0.07f, lane - bow),
+        Vec3(3.05f, 0.14f, lane),
+        0.045f, 14, hose, MAT_RUBBER);
 
-    // Nozzle on the free end.
-    drawCylS(parent * translate(1.30f, -2.46f, 1.30f) * scale(0.11f, 0.26f, 0.11f),
-             C_CHROME * 0.75f, 0.0f, 0.70f, 0.38f, MAT_CHROME);
+    // Crimped fittings at both ends, so the hose terminates in hardware
+    // instead of simply stopping.
+    drawCylS(parent * translate(0.20f, 0.30f + lane * 0.4f, lane) * rotateZ(90.0f)
+             * scale(0.070f, 0.13f, 0.070f), C_CHROME * 0.72f, 0.0f, 0.70f, 0.38f, MAT_CHROME);
+    drawCylS(parent * translate(3.05f, 0.14f, lane) * rotateZ(90.0f)
+             * scale(0.070f, 0.13f, 0.070f), C_CHROME * 0.72f, 0.0f, 0.70f, 0.38f, MAT_CHROME);
 }
+

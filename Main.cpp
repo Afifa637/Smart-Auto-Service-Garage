@@ -78,7 +78,7 @@ static float gShowcaseSpeed = 11.0f;   // degrees per second
 static float gFrameMsAccum = 0.0f;
 static int   gFrameMsCount = 0;
 static float gFrameMsAvg = 0.0f;
-static bool  gDoorOpen = true;
+static bool  gDoorOpen = false;   // the vehicle is outside; the building is shut
 static bool  gLiftRaised = false;
 
 enum TeachingObject {
@@ -122,8 +122,8 @@ static const char* kRobotStages[] = {
 
 
 //  ANIMATION PARAMETERS - constants for this stage, variables later.
-static float gDoorOffset = 4.9f;    // 4.9 = fully open (the default now), 0.0 = closed
-static float gDoorTarget = 4.9f;    // where gDoorOffset is currently easing towards
+static float gDoorOffset = 0.0f;    // 4.9 = fully open, 0.0 = closed (the start state)
+static float gDoorTarget = 0.0f;    // where gDoorOffset is currently easing towards
 static float gLiftHeight = 0.0f;    // 0.0 = lowered, 4.0 = fully raised
 static float gLiftTarget = 0.0f;    // where gLiftHeight is currently easing towards
 static float gRobotBaseYaw = 60.0f;   // parked sideways; TOP round turntable only, square pedestal fixed
@@ -140,11 +140,10 @@ static float gFanAngle = 0.0f;
 //  and so the whole interactive state can be printed in one place.
 static Scene::SceneSwitches gSwitches;
 
-// Drive-out animation: 0 = parked on the lift, 1 = out on the apron.
-// Set by --trafficx so a capture is deterministic; normal runs animate.
-static bool  gTrafficFrozen = false;
-static float gCarDriveTarget = 0.0f;
-static const float kCarDriveSpeed = 0.17f;   // fraction of the run per second
+// Arrival animation: 1 = waiting outside on the apron, 0 = parked on the lift.
+// The scene opens with the vehicle outside, so the target starts at 1 too.
+static float gCarDriveTarget = 1.0f;
+static const float kCarDriveSpeed = 0.092f;  // fraction of the run per second (~11 s end to end)
 static bool  gSafetyStop = false;       // true for a frame when collision prevention blocks motion
 
 static const float kDoorSpeed = 0.80f;   
@@ -162,6 +161,8 @@ static const float kWristSpeed = 55.0f;
 enum ServiceState
 {
     SERVICE_IDLE = 0,
+    SERVICE_DOOR_OPEN_IN,   // the vehicle is outside; open up for it
+    SERVICE_DRIVE_IN,       // it drives in and up the ramp onto the lift
     SERVICE_DOOR_CLOSE,
     SERVICE_LIFT_UP,
     SERVICE_SCAN,
@@ -376,6 +377,27 @@ static const RobotPose POSE_SCAN_OUT       = {   -7.70f,   34.79f,  -129.51f,  1
 // into the next dragged the tool 78 mm through the door skin on the way back
 // to the start of the following band; stepping 0.35 m out in between keeps
 // the whole traverse off the paint.
+
+// ---------------------------------------------------------------------------
+//  PLATFORM ROTATION SAFE POSE
+//
+//  Before the turntable runs, the arm has to be clear of the volume the
+//  vehicle sweeps through.  That volume is not the vehicle's parked footprint:
+//  turning a 5.68 x 2.06 m body about its centre sweeps a CYLINDER of radius
+//
+//      sqrt(2.84^2 + 1.03^2) = 3.02 m
+//
+//  about the lift axis, so the corners reach 3.02 m out in every direction,
+//  including straight at the robot.
+//
+//  This pose folds the elbow fully back (-150 degrees, the mechanical stop)
+//  and stands the forearm up over the arm's own base, putting every link at
+//  least 0.51 m outside that cylinder.  The yaw is deliberately left where the
+//  scanning poses leave it: with the arm folded over its own base the yaw has
+//  almost no effect on clearance, so spinning the base would be motion for
+//  nothing.
+// ---------------------------------------------------------------------------
+static const RobotPose POSE_PLATFORM_SAFE = {  -6.00f,  14.00f, -150.00f, 230.00f, 0.0f };
 static const RobotPose POSE_SIDE_RETRACT   = {   -3.55f,   10.90f,  -139.01f,  218.11f, 0.0f };
 
 // Front-left wheel fastener poses.  Each pose is solved against the actual lug
@@ -449,10 +471,6 @@ static void setTeachingMode(TeachingObject obj); // forward declaration
 //  actually covered, so a wheel of radius r turning through angle A has rolled
 //  exactly r*A along the road.
 // ---------------------------------------------------------------------------
-static const float kTrafficSpeed = 4.2f;    // metres per second
-static const float kTrafficStart = -17.0f;
-static const float kTrafficEnd   =  17.0f;
-
 static float shortestAngleDelta(float from, float to);   // defined below
 static float wrapAngle180(float a);                     // defined below
 
@@ -471,25 +489,13 @@ static bool moveCarYawToward(float target, float dt, float degPerSec = 34.0f)
     return false;
 }
 
-static void updateTraffic(float dt)
-{
-    if (!gSwitches.trafficOn || gTrafficFrozen) return;
-
-    gSwitches.trafficX += kTrafficSpeed * dt;
-    if (gSwitches.trafficX > kTrafficEnd) gSwitches.trafficX = kTrafficStart;
-
-    const float wheelRadius = 0.495f;
-    gSwitches.trafficSpin -= (kTrafficSpeed * dt / wheelRadius) * 180.0f / PI_F;
-    if (gSwitches.trafficSpin < -360.0f)
-        gSwitches.trafficSpin = std::fmod(gSwitches.trafficSpin, 360.0f);
-}
 
 static void updateCarDrive(float dt)
 {
     const float before = gSwitches.carDrive;
     gSwitches.carDrive = moveToward(gSwitches.carDrive, gCarDriveTarget, kCarDriveSpeed * dt);
 
-    const float travelled = (gSwitches.carDrive - before) * 17.50f;  // CAR_DRIVE_DISTANCE
+    const float travelled = (gSwitches.carDrive - before) * Scene::carDriveDistance();
     const float wheelRadius = 0.495f;
     gSwitches.wheelSpin += (travelled / wheelRadius) * 180.0f / PI_F;
     if (gSwitches.wheelSpin > 360.0f)  gSwitches.wheelSpin = std::fmod(gSwitches.wheelSpin, 360.0f);
@@ -506,7 +512,9 @@ static const char* serviceStatusText()
     switch (gServiceState)
     {
     case SERVICE_IDLE:           return "READY - ENTER starts automatic surface service";
-    case SERVICE_DOOR_CLOSE:     return "SERVICE STARTED - closing garage door";
+    case SERVICE_DOOR_OPEN_IN:   return "SERVICE STARTED - opening the door for the vehicle";
+    case SERVICE_DRIVE_IN:       return "vehicle driving in and up the lift ramp";
+    case SERVICE_DOOR_CLOSE:     return "vehicle in position - closing garage door";
     case SERVICE_LIFT_UP:        return "raising vehicle to service height";
     case SERVICE_SCAN:
     {
@@ -789,9 +797,14 @@ static void resetServiceDemo()
     cancelRobotMove();
     gServiceVisual = Scene::ServiceVisualState();
 
-    gDoorOpen = true;
-    gDoorOffset = 4.9f;
-    gDoorTarget = 4.9f;
+    gDoorOpen = false;
+    gDoorOffset = 0.0f;
+    gDoorTarget = 0.0f;
+
+    // The vehicle starts outside, on the apron, facing the door.
+    gSwitches.carDrive = 1.0f;
+    gCarDriveTarget = 1.0f;
+    gSwitches.wheelSpin = 0.0f;
 
     gLiftRaised = false;
     gLiftHeight = 0.0f;
@@ -831,7 +844,7 @@ static void startServiceDemo()
     for (int i = 0; i < 5; ++i) gServiceVisual.lugProgress[i] = 0.0f;
 
     gRobotTool = 0;
-    setServiceState(SERVICE_DOOR_CLOSE);
+    setServiceState(SERVICE_DOOR_OPEN_IN);
     std::cout << "Automatic surface inspection / cleaning / polishing service started.\n";
 }
 
@@ -866,6 +879,26 @@ static void updateServiceAutomation(float dt)
 
     switch (gServiceState)
     {
+    case SERVICE_DOOR_OPEN_IN:
+        // The vehicle is waiting on the apron.  Open the door, and hold for a
+        // moment once it is clear, so the arrival reads as "the door opened,
+        // THEN it moved" rather than as one continuous slide.
+        gDoorOpen = true;
+        gDoorTarget = 4.9f;
+        gCarDriveTarget = 1.0f;
+        if (gDoorOffset >= 4.80f && gServiceTimer > 1.30f)
+            setServiceState(SERVICE_DRIVE_IN);
+        break;
+
+    case SERVICE_DRIVE_IN:
+        // One parameter drives the whole arrival: carDrive runs 1 -> 0, and
+        // the scene derives the vehicle's position, its height on the ramp,
+        // its nose-up attitude and its wheel rotation from that single number.
+        gCarDriveTarget = 0.0f;
+        if (gSwitches.carDrive <= 0.002f && gServiceTimer > 0.60f)
+            setServiceState(SERVICE_DOOR_CLOSE);
+        break;
+
     case SERVICE_DOOR_CLOSE:
         gDoorOpen = false;
         gDoorTarget = 0.0f;
@@ -929,8 +962,9 @@ static void updateServiceAutomation(float dt)
 
         // ---- turn the vehicle about ---------------------------------------
         case 14: gScanPercent = 64;
-                 if (moveRobotTowardPose(POSE_SCAN_SIDE_SAFE, dt, 0.95f)) nextServicePhase(); break;
-        case 15: // the arm waits clear while the turntable runs
+                 // Fold right back before the plate moves - see POSE_PLATFORM_SAFE.
+                 if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 0.95f)) nextServicePhase(); break;
+        case 15: // the arm is folded clear; only now may the turntable run
                  if (moveCarYawToward(180.0f, dt)) nextServicePhase(); break;
 
         // ---- far flank, same poses, opposite side of the vehicle ----------
@@ -949,7 +983,7 @@ static void updateServiceAutomation(float dt)
 
         // ---- back to the delivered orientation ----------------------------
         case 21: gScanPercent = 100;
-                 if (moveRobotTowardPose(POSE_SCAN_SIDE_SAFE, dt, 0.95f)) nextServicePhase(); break;
+                 if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 0.95f)) nextServicePhase(); break;
         case 22: if (moveCarYawToward(0.0f, dt)) nextServicePhase(); break;
         case 23: if (gServiceTimer > 1.20f) nextServicePhase(); break;
         default: setServiceState(SERVICE_GET_SPONGE); break;
@@ -1144,7 +1178,8 @@ static void updateServiceAutomation(float dt)
         // ---- turn about and do the far flank ------------------------------
         else if (gServicePhase == 6)
         {
-            if (moveRobotTowardPose(POSE_SIDE_RETRACT, dt, 1.00f)) nextServicePhase();
+            // Fold clear of the vehicle's rotation sweep before the plate runs.
+            if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 1.00f)) nextServicePhase();
         }
         else if (gServicePhase == 7)
         {
@@ -1190,7 +1225,7 @@ static void updateServiceAutomation(float dt)
         }
         else if (gServicePhase == 14)
         {
-            if (moveRobotTowardPose(POSE_SIDE_RETRACT, dt, 1.00f)) nextServicePhase();
+            if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 1.00f)) nextServicePhase();
         }
         else if (gServicePhase == 15)
         {
@@ -1745,6 +1780,8 @@ static void printTeachingInfo()
 //     --capture <file.bmp>   render a few frames headlessly and exit, which is
 //                            how the submission stills in Reference/ are made
 // ===========================================================================
+static bool gReelActive = false;
+
 static bool saveScreenshotBMP(const char* path, int width, int height)
 {
     if (width <= 0 || height <= 0) return false;
@@ -1796,7 +1833,8 @@ static bool saveScreenshotBMP(const char* path, int width, int height)
     fwrite(pixels.data(), 1, static_cast<size_t>(imageBytes), f);
     fclose(f);
 
-    std::cout << "[Capture] wrote " << path << "  (" << width << " x " << height << ")\n";
+    if (!gReelActive)
+        std::cout << "[Capture] wrote " << path << "  (" << width << " x " << height << ")\n";
     return true;
 }
 
@@ -1806,6 +1844,188 @@ static void captureCurrentFrame()
     char name[128];
     std::snprintf(name, sizeof(name), "SmartGarage_shot_%03d.bmp", gCaptureCounter++);
     saveScreenshotBMP(name, gWidth, gHeight);
+}
+
+// ===========================================================================
+//  DEMO REEL
+//
+//  A scripted two-minute run used to record the submission video.  Three
+//  things make it a recording rather than a live capture:
+//
+//    1. FIXED TIMESTEP.  The simulation advances by exactly 1/24 s per frame
+//       regardless of how long that frame took to render, so the playback
+//       speed of the finished file does not depend on the machine.
+//    2. V-SYNC OFF.  Frames are produced as fast as they can be, so a
+//       two-minute video records in well under two minutes.
+//    3. EVERY FRAME IS WRITTEN.  No frames are dropped, so the motion is
+//       smooth even where the renderer is slow.
+//
+//  The camera follows a keyframe track and the feature toggles fire from an
+//  event table, so the same reel comes out identical every time.
+// ===========================================================================
+static std::string gReelDir;
+static int   gReelFrame = 0;
+static int   gReelStart = 0;             // first frame to actually write
+static int   gReelTotal = 2880;          // 120 s at 24 fps
+static const float kReelFps = 24.0f;
+static float gReelTime = 0.0f;
+static float gServiceSpeed = 1.0f;       // the service runs faster while recording
+
+struct ReelKey { float t; Vec3 eye; Vec3 look; float fov; };
+
+// Camera track.
+//
+//  LAYOUT THE SHOTS HAVE TO RESPECT.  The robot is bolted at x = -4.6 and its
+//  tool rack at x = -7.9, so the whole left-hand half of the bay is occupied
+//  by the machine doing the work.  Shooting the service from that side puts an
+//  arm link straight across the lens.  Every interior shot is therefore taken
+//  from the OPEN right-hand side, where the arm reads in full against clear
+//  floor.  The parked cars sit at x = +10.6 and the columns at x = +-13.3, so
+//  the camera stays inside x < 9 indoors.
+//
+//  The reel now opens OUTSIDE, because the vehicle does: it waits on the
+//  apron, the door opens for it and it drives in and up the ramp.  While that
+//  is happening the camera tracks the vehicle rather than following keyframes
+//  (see reelApplyCamera), so it stays framed wherever it has got to.
+static const ReelKey kReelKeys[] = {
+    // ---- 0-6 s: outside, the vehicle waiting on the apron ---------------
+    {   0.0f, Vec3(  8.5f, 2.9f, 23.0f), Vec3( 0.0f, 1.3f, 16.4f), 52.0f },
+    {   5.0f, Vec3(  6.0f, 2.0f, 21.5f), Vec3( 0.0f, 1.2f, 16.2f), 44.0f },
+    // 6-30 s is the tracked arrival; these two only bracket it.
+    {   6.0f, Vec3(  6.0f, 2.0f, 21.0f), Vec3( 0.0f, 1.2f, 16.0f), 44.0f },
+    {  30.0f, Vec3(  7.5f, 3.2f,  3.0f), Vec3( 0.0f, 2.0f, -2.0f), 48.0f },
+    // ---- 30-44 s: the lift raises; projection toggle ---------------------
+    // The orthographic box is as tall as the perspective frustum is at the
+    // subject - about 11 m here - so a level camera puts its lower half below
+    // the slab, and the bottom third of the frame is simply the void under the
+    // floor.  Raising the rig and pitching it down keeps the whole box on the
+    // building, and an elevated view down the bay is also the clearest place
+    // to watch the runways stop converging.
+    {  34.0f, Vec3(  1.2f, 5.40f, 8.5f), Vec3( 0.0f, 0.9f, -4.0f), 42.0f },
+    {  40.0f, Vec3(  5.0f, 3.20f, 7.0f), Vec3( 0.0f, 1.8f, -2.0f), 46.0f },
+    // ---- 44-56 s: shading, then textures ---------------------------------
+    {  46.0f, Vec3(  8.0f, 2.9f, -0.5f), Vec3( 0.0f, 2.2f, -2.0f), 42.0f },
+    {  50.0f, Vec3(  7.0f, 2.6f, -4.5f), Vec3( 0.0f, 2.1f, -2.2f), 40.0f },
+    {  54.0f, Vec3(  5.2f, 1.6f,  5.0f), Vec3(-0.5f, 0.9f, -2.0f), 55.0f },
+    {  58.0f, Vec3(  6.5f, 2.6f,  4.0f), Vec3( 0.0f, 1.8f, -2.0f), 50.0f },
+    // ---- 58-72 s: the three lighting rigs, then reflections ---------------
+    {  62.0f, Vec3(  7.0f, 3.0f,  3.0f), Vec3( 0.0f, 2.2f, -2.0f), 46.0f },
+    {  66.0f, Vec3(  8.0f, 2.8f, -0.5f), Vec3( 0.0f, 2.2f, -2.0f), 44.0f },
+    {  70.0f, Vec3(  6.0f, 2.4f, -2.0f), Vec3( 0.0f, 2.1f, -2.0f), 38.0f },
+    // ---- 72-104 s: the service itself ------------------------------------
+    {  76.0f, Vec3(  8.5f, 4.4f,  3.5f), Vec3(-2.0f, 2.8f, -2.0f), 50.0f },
+    {  82.0f, Vec3(  6.5f, 4.6f, -0.5f), Vec3(-1.5f, 3.0f, -2.0f), 44.0f },
+    {  88.0f, Vec3(  5.5f, 4.0f, -5.5f), Vec3(-1.0f, 2.9f, -2.4f), 42.0f },
+    {  94.0f, Vec3(  6.5f, 3.2f,  2.0f), Vec3(-1.0f, 2.6f, -2.0f), 42.0f },
+    { 100.0f, Vec3(  7.5f, 3.0f, -2.0f), Vec3( 0.0f, 2.5f, -2.0f), 40.0f },
+    { 106.0f, Vec3(  6.0f, 2.5f,  3.5f), Vec3( 0.5f, 1.8f, -0.5f), 44.0f },
+    // ---- 106-120 s: finished, pull back -----------------------------------
+    { 112.0f, Vec3(  8.5f, 3.2f,  6.5f), Vec3( 0.0f, 2.2f, -1.5f), 50.0f },
+    { 120.0f, Vec3( 11.5f, 3.6f, 10.5f), Vec3( 0.0f, 2.0f,  0.0f), 56.0f },
+};
+
+// While the vehicle is arriving it is the only thing worth looking at, and it
+// covers 18.5 m to get where it is going.  Fixed keyframes cannot hold a shot
+// on something moving that far, so for this window the camera is slaved to the
+// vehicle's own position: it rides alongside and a little ahead, which keeps
+// the ramp climb in frame without the operator having to guess the timing.
+static bool reelTrackArrival(float t)
+{
+    if (t < 6.0f || t > 30.0f) return false;
+
+    const float carZ = -2.00f + Scene::carDriveDistance() * gSwitches.carDrive;
+    const float carY = Scene::liftTopY(gLiftHeight) * (1.0f - gSwitches.carDrive);
+
+    // Ease the rig in and out so the hand-off to the keyframes is not a cut.
+    float u = (t - 6.0f) / 3.0f;                 // 3 s to take over
+    u = clampf(u, 0.0f, 1.0f);
+    float v = (30.0f - t) / 4.0f;                // 4 s to hand back
+    v = clampf(v, 0.0f, 1.0f);
+    const float blend = (u * u * (3.0f - 2.0f * u)) * (v * v * (3.0f - 2.0f * v));
+    if (blend <= 0.001f) return false;
+
+    // Abeam and a little ahead.  A ramp climb is a change of ATTITUDE, and
+    // attitude only reads in profile - from behind, a vehicle tilting nose-up
+    // just gets shorter.
+    //
+    //  The camera has to STAY INSIDE THE BUILDING.  The clear door opening is
+    //  13 m wide, so a rig riding abeam at x = 8.4 is looking at the vehicle
+    //  through 1.9 m of front wall for the whole time it is on the apron - the
+    //  shot goes black.  Clamping the camera's z to the inside of the
+    //  threshold keeps the sight line within the opening: from (7.4, ., 9.0)
+    //  to a vehicle at z = 16, the ray crosses the door plane at x = 2.8.
+    const float eyeZ = clampf(carZ + 3.0f, -1.0f, 9.0f);
+    const Vec3 look(0.0f, carY + 0.95f, carZ - 0.40f);
+    const Vec3 eye(7.40f, carY + 1.90f, eyeZ);
+
+    const int n = static_cast<int>(sizeof(kReelKeys) / sizeof(kReelKeys[0]));
+    int i = 0;
+    while (i + 1 < n - 1 && kReelKeys[i + 1].t <= t) ++i;
+    const ReelKey& a = kReelKeys[i];
+    const ReelKey& b = kReelKeys[i + 1];
+    float w = (b.t > a.t) ? (t - a.t) / (b.t - a.t) : 0.0f;
+    w = clampf(w, 0.0f, 1.0f);
+    const float e = w * w * (3.0f - 2.0f * w);
+    const Vec3 keyEye = a.eye + (b.eye - a.eye) * e;
+    const Vec3 keyLook = a.look + (b.look - a.look) * e;
+
+    const Vec3 finalEye = keyEye + (eye - keyEye) * blend;
+    const Vec3 finalLook = keyLook + (look - keyLook) * blend;
+
+    gCamera.position = finalEye;
+    gCamera.fov = 46.0f;
+    const Vec3 d = finalLook - finalEye;
+    const float flat = std::sqrt(d.x * d.x + d.z * d.z);
+    gCamera.yaw = std::atan2(d.z, d.x) * 180.0f / PI_F;
+    gCamera.pitch = std::atan2(d.y, (flat > 1e-4f) ? flat : 1e-4f) * 180.0f / PI_F;
+    return true;
+}
+
+static void reelApplyCamera(float t)
+{
+    if (reelTrackArrival(t)) return;
+
+    const int n = static_cast<int>(sizeof(kReelKeys) / sizeof(kReelKeys[0]));
+    int i = 0;
+    while (i + 1 < n - 1 && kReelKeys[i + 1].t <= t) ++i;
+    const ReelKey& a = kReelKeys[i];
+    const ReelKey& b = kReelKeys[i + 1];
+    float u = (b.t > a.t) ? (t - a.t) / (b.t - a.t) : 0.0f;
+    u = clampf(u, 0.0f, 1.0f);
+    const float e = u * u * (3.0f - 2.0f * u);        // ease between keys
+
+    const Vec3 eye  = a.eye  + (b.eye  - a.eye)  * e;
+    const Vec3 look = a.look + (b.look - a.look) * e;
+    gCamera.position = eye;
+    gCamera.fov = a.fov + (b.fov - a.fov) * e;
+
+    const Vec3 d = look - eye;
+    const float flat = std::sqrt(d.x * d.x + d.z * d.z);
+    gCamera.yaw = std::atan2(d.z, d.x) * 180.0f / PI_F;
+    gCamera.pitch = std::atan2(d.y, (flat > 1e-4f) ? flat : 1e-4f) * 180.0f / PI_F;
+}
+
+// Feature toggles, fired once as the reel time passes each mark.
+static void reelFireEvents(float prev, float now)
+{
+    auto at = [&](float mark) { return prev < mark && now >= mark; };
+
+    // The demonstration itself starts almost immediately: the vehicle is
+    // outside, and bringing it in IS the opening shot.  The feature toggles
+    // then fire during the service, between the robot's moves.
+    if (at( 6.0f)) { startServiceDemo(); gServiceSpeed = 1.55f; }
+
+    if (at(34.0f)) gOrthographic = true;                       // projection
+    if (at(39.0f)) gOrthographic = false;
+    if (at(44.0f)) gShadingMode = 1;                           // Gouraud
+    if (at(50.0f)) gShadingMode = 0;                           // Cook-Torrance
+    if (at(53.0f)) { gTexturesEnabled = false; Scene::setTexturesEnabled(false); }
+    if (at(57.0f)) { gTexturesEnabled = true;  Scene::setTexturesEnabled(true);  }
+    if (at(60.0f)) gLightingPreset = LIGHT_STUDIO;             // lighting rigs
+    if (at(64.0f)) gLightingPreset = LIGHT_NIGHT;
+    if (at(68.0f)) gLightingPreset = LIGHT_WORKSHOP;
+    if (at(70.0f)) gReflectionsEnabled = false;                // image-based lighting
+    if (at(72.0f)) gReflectionsEnabled = true;
 }
 
 // ===========================================================================
@@ -1821,6 +2041,7 @@ static void captureCurrentFrame()
 // ===========================================================================
 static void updateShowcaseCamera(float dt, const Vec3& subject)
 {
+    if (gReelActive) return;      // the reel's keyframe track owns the camera
     if (!gShowcase) return;
 
     gShowcaseAngle += gShowcaseSpeed * dt;
@@ -1987,8 +2208,15 @@ static void handleDiscreteKey(GLFWwindow* window, int key)
         std::cout << "Neon sign: " << (gSwitches.neonSign ? "ON" : "OFF") << "\n";
         break;
     case GLFW_KEY_PAGE_UP:
-        gSwitches.trafficOn = !gSwitches.trafficOn;
-        std::cout << "Passing traffic: " << (gSwitches.trafficOn ? "ON" : "OFF") << "\n";
+        // The passing car on the road is gone; this key now parks the main
+        // vehicle back outside so the arrival can be demonstrated again.
+        if (!serviceRunning())
+        {
+            gCarDriveTarget = 1.0f;
+            gDoorOpen = true;
+            gDoorTarget = 4.9f;
+            std::cout << "Vehicle returning to the apron - press ENTER to run the arrival again.\n";
+        }
         break;
     case GLFW_KEY_END:
         gSwitches.hazardBeacon = !gSwitches.hazardBeacon;
@@ -2345,7 +2573,7 @@ static void printControls()
     std::cout << " END            hazard beacon flash on / off\n";
     std::cout << " 9 / 0          ceiling fan slower / faster (0 = stopped)\n";
     std::cout << " HOME           drive the vehicle OUT of the bay / bring it back\n";
-    std::cout << " PAGE UP        passing traffic on the road outside on / off\n";
+    std::cout << " PAGE UP        send the vehicle back outside, to replay the arrival\n";
     std::cout << "\n Command line: --autostart --showcase --preset N --capture file.bmp\n";
     std::cout << "               --orbit DEG --radius M --height M --fov DEG --size W H\n";
     std::cout << " , / .          environment lighting intensity down / up\n";
@@ -3220,6 +3448,8 @@ static float gCaptureCarYaw = 0.0f;
 static bool  gCaptureHasCam = false;
 static float gCaptureCam[5] = { 0, 0, 0, 0, 0 };
 static float gCaptureLift = -1.0f;
+static float gCaptureCarDrive = -1.0f;   // freeze the arrival part-way, for inspection
+static bool  gCaptureNoTextures = false;
 static float gCaptureFov = -1.0f;
 // Begin the automatic service sequence as soon as the window opens.  Handy
 // when the project is being demonstrated from a shortcut rather than driven
@@ -3238,6 +3468,7 @@ static void parseCommandLine(int argc, char** argv)
         else if (a == "--frames" && i + 1 < argc)  gCaptureFrames = atoi(argv[++i]);
         else if (a == "--polish")                  next(gCapturePolish);
         else if (a == "--lift")                    next(gCaptureLift);
+        else if (a == "--cardrive")                next(gCaptureCarDrive);
         else if (a == "--preset" && i + 1 < argc)
         {
             int preset = atoi(argv[++i]);
@@ -3257,9 +3488,19 @@ static void parseCommandLine(int argc, char** argv)
         }
         else if (a == "--showcase") gShowcase = true;
         else if (a == "--ortho")    gOrthographic = true;
+        // Capture-only switches, so the figures in the report and the slides
+        // are rendered by the project itself rather than mocked up.
+        else if (a == "--gouraud")  gShadingMode = 1;
+        else if (a == "--notex")    gCaptureNoTextures = true;
         else if (a == "--dirt")     next(gCaptureDirt);
         else if (a == "--caryaw")   next(gCaptureCarYaw);
-        else if (a == "--trafficx") { next(gSwitches.trafficX); gTrafficFrozen = true; }
+        else if (a == "--reel" && i + 1 < argc)
+        {
+            gReelDir = argv[++i];
+            gReelActive = true;
+        }
+        else if (a == "--reelframes" && i + 1 < argc) gReelTotal = atoi(argv[++i]);
+        else if (a == "--reelstart" && i + 1 < argc)  gReelStart = atoi(argv[++i]);
         else if (a == "--autostart") gAutoStartService = true;
         else if (a == "--tool" && i + 1 < argc) gRobotTool = atoi(argv[++i]);
         else if (a == "--robot" && i + 5 < argc)
@@ -3313,7 +3554,7 @@ int main(int argc, char** argv)
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(1);   // v-sync
+    glfwSwapInterval(gReelActive ? 0 : 1);   // v-sync, off while recording
 
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
     glfwSetCursorPosCallback(window, cursorPosCallback);
@@ -3395,6 +3636,8 @@ int main(int argc, char** argv)
     if (gCaptureDirt >= 0.0f) gServiceVisual.dirtAmount = gCaptureDirt;
     gServiceVisual.carYaw = gCaptureCarYaw;
     if (gCaptureLift >= 0.0f) { gLiftHeight = gCaptureLift; gLiftTarget = gCaptureLift; }
+    if (gCaptureCarDrive >= 0.0f) { gSwitches.carDrive = gCaptureCarDrive; gCarDriveTarget = gCaptureCarDrive; }
+    if (gCaptureNoTextures) { gTexturesEnabled = false; Scene::setTexturesEnabled(false); }
     if (gCaptureFov > 0.0f) gCamera.fov = gCaptureFov;
     if (gCaptureRobot)
     {
@@ -3417,16 +3660,50 @@ int main(int argc, char** argv)
         float deltaTime = now - lastFrame;
         lastFrame = now;
 
+        if (gReelActive)
+        {
+            // Fixed timestep: the finished file plays at a known speed no
+            // matter how long each frame actually took to produce.
+            deltaTime = 1.0f / kReelFps;
+            const float prevTime = gReelTime;
+            gReelTime += deltaTime;
+            now = gReelTime;
+            reelFireEvents(prevTime, gReelTime);
+            reelApplyCamera(gReelTime);
+
+            // ---- fast-forward ------------------------------------------
+            //
+            //  The reel can be recorded in chunks.  A chunk that starts
+            //  part-way through must still have the service sequence in
+            //  exactly the state continuous playback would have put it in,
+            //  so the simulation is advanced for every earlier frame - but
+            //  nothing is rendered or written, which makes the warm-up cost
+            //  a few milliseconds per frame instead of forty.
+            if (gReelFrame < gReelStart)
+            {
+                updateServiceAutomation(deltaTime * gServiceSpeed);
+                gFanAngle += 95.0f * gSwitches.fanSpeed * deltaTime;
+                updateCarDrive(deltaTime);
+                Scene::setSwitches(gSwitches);
+                gDoorOffset = moveToward(gDoorOffset, gDoorTarget, kDoorSpeed * deltaTime);
+                const float lc = clampf(moveToward(gLiftHeight, gLiftTarget, kLiftSpeed * deltaTime),
+                                        0.0f, 3.80f);
+                if (liftPositionSafe(lc)) gLiftHeight = lc;
+                ++gReelFrame;
+                glfwPollEvents();
+                continue;
+            }
+        }
+
         processDiscreteInput(window);
         processMovement(window, deltaTime);
-        updateServiceAutomation(deltaTime);
+        updateServiceAutomation(deltaTime * gServiceSpeed);
         updateTeachingWindowTitle(window);
 
         // ---- SECTION I: interactive motion ---------------------------
         gFanAngle += 95.0f * gSwitches.fanSpeed * deltaTime;
         if (gFanAngle > 360.0f) gFanAngle = std::fmod(gFanAngle, 360.0f);
         updateCarDrive(deltaTime);
-        updateTraffic(deltaTime);
         if (gSwitches.hazardBeacon)
             gServiceVisual.warningPulse = 0.35f + 0.65f * (0.5f + 0.5f * std::sin(now * 7.5f));
         Scene::setSwitches(gSwitches);
@@ -3634,6 +3911,14 @@ int main(int argc, char** argv)
         {
             saveScreenshotBMP(gCapturePath.c_str(), gWidth, gHeight);
             glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+
+        if (gReelActive)
+        {
+            char path[512];
+            std::snprintf(path, sizeof(path), "%s/f%05d.bmp", gReelDir.c_str(), gReelFrame);
+            saveScreenshotBMP(path, gWidth, gHeight);
+            if (++gReelFrame >= gReelTotal) glfwSetWindowShouldClose(window, GLFW_TRUE);
         }
 
         glfwSwapBuffers(window);
