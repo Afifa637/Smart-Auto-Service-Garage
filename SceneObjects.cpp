@@ -1770,11 +1770,13 @@ void Scene::drawHydraulicLift(const Mat4& parent, float liftHeight)
             Vec3(1.00f, LIFT_PAD_T, LIFT_PAD_L)), C_LIFT_YELLOW,
             0.0f, 0.55f, 0.46f, MAT_TREAD);
 
-        // Raised lip along the outer edge so a wheel cannot roll off.
-        drawCube(lift * place(Vec3(x + sx * 0.46f, topY + 0.045f, 0.0f),
-            Vec3(0.09f, 0.09f, LIFT_PAD_L)), C_LIFT_YELLOW);
-        // Thin chrome trim along the inner edge, finishing the pad the same
-        // way the outer lip does.
+        // NOTE: a raised yellow lip used to run the full length of the
+        // outer edge here, to stop a wheel rolling off.  The turntable's
+        // rotation footprint (radius 2.10 m) overlaps this runway, so the
+        // lip stood as a fixed obstacle inside the area the vehicle sweeps
+        // through when the plate turns - the wheel would ride directly over
+        // it.  It is gone; the chrome trim below still marks the edge
+        // without standing proud of the surface.
         drawCube(lift * place(Vec3(x - sx * 0.49f, topY - 0.006f, 0.0f),
             Vec3(0.020f, 0.020f, LIFT_PAD_L)), C_CHROME * 0.80f);
 

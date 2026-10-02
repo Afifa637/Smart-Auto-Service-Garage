@@ -161,3 +161,41 @@ H.264 is not available on this machine — the OpenH264 runtime DLL is absent an
 OpenCV has no other H.264 backend — so the container is MPEG-4 Part 2. It plays
 in every desktop player and in PowerPoint, but it is roughly twice the size an
 H.264 file of the same quality would be.
+
+## 9. v10.1 — the raised yellow lip, and more headroom during rotation
+
+Two further defects, found by watching the platform actually turn with the
+vehicle on it:
+
+### The runway's raised lip was inside the turntable's rotation footprint
+
+The runway pads either side of the turntable carried a raised yellow lip
+along their outer edge ("so a wheel cannot roll off"), 90 mm proud of the
+surface, running the full 5.2 m length of the pad. The turntable's rotation
+footprint (radius 2.10 m) overlaps those pads in plan view — it has to, since
+the vehicle's wheels have to be standing on them before the plate turns — so
+the lip stood as a **fixed raised obstacle inside the area the vehicle sweeps
+through**. A wheel riding the turntable around would pass directly over it,
+which read exactly like what it was: a yellow panel colliding with the wheel.
+It is removed; the thin flush chrome trim along the inner edge is kept, since
+it never stood proud of the surface.
+
+### More headroom for the arm during rotation
+
+`POSE_PLATFORM_SAFE` previously folded the arm back over its own base for
+**0.51 m** of clearance to the vehicle's 3.02 m rotation-sweep cylinder — enough
+by the strict either/or test, but visually close in some camera angles, and
+not what "move it out of the way" means to a human watching it work.
+
+The pose now also **raises** the tool tip, to y = 2.53 m — clear *over* the
+vehicle's roofline rather than merely clear of it sideways — while the tip
+stays only 1.68 m out from the arm's own base, short of the tool rack:
+
+```
+POSE_PLATFORM_SAFE = { -6.66, -10.00, -150.00, 190.00, 0.0 }   // was { -6.00, 14.00, -150.00, 230.00, 0.0 }
+```
+
+Clearance to the sweep cylinder is now **1.58 m**, roughly three times the
+previous margin, verified both at the three sampled rotation angles (0°, 90°,
+180°) and through the fold-up transition that reaches it from the end of the
+rear-scan path. Both are a direct render of the project's own pose, not a mock.

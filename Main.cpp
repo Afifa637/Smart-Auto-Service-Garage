@@ -390,14 +390,20 @@ static const RobotPose POSE_SCAN_OUT       = {   -7.70f,   34.79f,  -129.51f,  1
 //  about the lift axis, so the corners reach 3.02 m out in every direction,
 //  including straight at the robot.
 //
-//  This pose folds the elbow fully back (-150 degrees, the mechanical stop)
-//  and stands the forearm up over the arm's own base, putting every link at
-//  least 0.51 m outside that cylinder.  The yaw is deliberately left where the
-//  scanning poses leave it: with the arm folded over its own base the yaw has
-//  almost no effect on clearance, so spinning the base would be motion for
-//  nothing.
+//  This pose folds the elbow to its -150 degree stop and raises the wrist so
+//  the tool tip lifts to y = 2.53 m - clear OVER the vehicle's roof line
+//  rather than merely clear of it sideways - while the tip itself stays only
+//  1.68 m out from the arm's own base, well short of the tool rack. That
+//  combination (fold + lift) gives 1.58 m of clearance to the 3.02 m sweep
+//  cylinder, more than three times the bare minimum, which is what "move the
+//  arm up out of the way" means mechanically: raise the whole assembly above
+//  the swept volume instead of standing it just outside the rim of it.
+//
+//  The yaw is left where the scanning poses leave it: with the arm folded
+//  over its own base the yaw barely changes the clearance, so spinning the
+//  base would be motion for nothing.
 // ---------------------------------------------------------------------------
-static const RobotPose POSE_PLATFORM_SAFE = {  -6.00f,  14.00f, -150.00f, 230.00f, 0.0f };
+static const RobotPose POSE_PLATFORM_SAFE = {  -6.66f, -10.00f, -150.00f, 190.00f, 0.0f };
 static const RobotPose POSE_SIDE_RETRACT   = {   -3.55f,   10.90f,  -139.01f,  218.11f, 0.0f };
 
 // Front-left wheel fastener poses.  Each pose is solved against the actual lug
