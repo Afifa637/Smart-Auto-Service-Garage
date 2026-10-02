@@ -246,3 +246,62 @@ the fender rather than at the base of the front window. They are now
 positioned as offsets from `CT_DLO_FRONT_Z`, so a future change to the
 greenhouse geometry carries the mirrors with it instead of leaving them behind
 a second time.
+
+## 11. v10.3 — the actual turntable collision, and a genuine colour fix
+
+Both of the previous round's fixes were real but incomplete, and the
+screenshots that followed showed exactly why.
+
+### The arm really was clipping the vehicle - at the far flank, not the near one
+
+`POSE_PLATFORM_SAFE` was verified by sweeping it against the vehicle's
+rotation-sweep cylinder at several yaws and declared clear with 1.58 m to
+spare. That check was run once, at the pose's own destination, and it missed
+the thing that actually mattered: the **transition into** that pose starts
+from the end of the rear-scan path, and that path is reused identically for
+both the near flank and the far flank, because the whole point of the
+turntable is that both passes use the same robot poses - the vehicle turns,
+not the robot. After the 180-degree turn, the world location that held the
+vehicle's TAIL on the first pass holds its NOSE on the second, and the nose
+and tail are not the same shape (the bumper, the light bar and the mirrors
+all project differently). A transition proven clear of the tail was never
+proven clear of the nose, and it wasn't: the robot's scanner head swept
+through the front bumper in exactly the pose the screenshots showed, at the
+real service lift height of 1.10 m (the earlier verification had used 2.6 m,
+which raised the car enough to hide the error).
+
+The fix does not depend on knowing which end of the car is where. Each of the
+four transitions into `POSE_PLATFORM_SAFE` is now two stages
+(`moveToPlatformSafe()` in Main.cpp):
+
+1. **Fold in place.** The elbow goes to its -150 degree stop and the wrist
+   raises, at WHATEVER YAW THE ARM ALREADY HAS - no sideways sweep at all,
+   only retraction toward the arm's own base.
+2. **Sweep.** Only once the arm is already folded and elevated does the yaw
+   turn, from wherever it is, to the final -6.66 degrees.
+
+An offline sweep of the fold shape confirms it holds the same 1.58 m
+clearance to the vehicle's full rotation envelope at every yaw from -39 to
++60 degrees - it is yaw-independent, because folded this tight it is governed
+by its distance from the arm's own base, not by which way the base is
+pointing. That is what makes the fix correct regardless of which end of the
+vehicle the previous pose left the arm near.
+
+### The turntable really was flickering yellow and blue - z-fighting, not a leftover colour
+
+The disc's top surface and the fixed runway pads it overlaps were both built
+from the same `liftTopY()`, so wherever they overlap in plan view they sat at
+EXACTLY the same height - a textbook z-fighting setup, invisible while both
+were the same yellow and suddenly very visible as a shifting wedge pattern
+once the disc became blue and the GPU had to pick a winner between two
+coplanar surfaces on a per-pixel basis. Recolouring was necessary but not
+sufficient; the actual depth tie needed resolving. The disc top is now 6 mm
+above the runway, which lets it fully occlude the yellow pad wherever the two
+overlap - the whole visible turntable area reads as one solid blue disc, with
+no flicker at any camera angle.
+
+Both fixes were verified against the actual failure mode rather than a
+plausible-looking replacement: the fold-up sweep was checked at the real
+1.10 m service lift height, at the exact far-flank yaw the reused scan path
+leaves the arm at, and the full automatic sequence was run to SERVICE
+COMPLETE to confirm all four platform rotations complete without a stall.

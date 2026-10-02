@@ -4322,16 +4322,23 @@ void Scene::drawScene(float doorOffset,
     // enough for the whole body would hang a metre into thin air on each side.
     const float turnY = liftTopY(liftHeight);
     const float TURN_D = 4.20f;
-    // The disc is painted in the lift's own blue, not the runway's yellow -
-    // the runway marks the fixed path a tyre drives; the blue marks the part
-    // that is a MACHINE and moves.  With both the same warm yellow, the plate
-    // used to read as more of the same floor rather than as a separate
-    // rotating object, so turning it was easy to miss.
-    drawCylS(world * translate(0.0f, turnY - 0.025f, LIFT_Z)
+    // The disc top used to sit EXACTLY at turnY - the same height as the
+    // fixed runway pads it overlaps, since both are built from the same
+    // liftTopY().  Two surfaces at identical depth is textbook z-fighting:
+    // invisible while both were the same yellow, but once the disc became
+    // blue the GPU's per-pixel coin-flip between the two coplanar surfaces
+    // showed up as a shifting yellow/blue wedge pattern that changed with the
+    // camera angle.  Raising the disc 6 mm above the runway resolves the
+    // actual depth tie rather than papering over it with colour, and lets the
+    // blue disc fully occlude the yellow pad wherever the two overlap - which
+    // is also just correct: the disc is the thing on top.  A car wheel
+    // crossing a 6 mm lip is not a bump worth noticing.
+    const float discTopY = turnY + 0.006f;
+    drawCylS(world * translate(0.0f, discTopY - 0.025f, LIFT_Z)
         * scale(TURN_D, 0.050f, TURN_D), C_LIFT_BLUE_D * 1.35f, 0.0f, 0.42f, 0.50f, MAT_TREAD);
     // Skirt under the plate, so it reads as a thick rotating table carried by
     // the runways rather than as a disc hanging in mid-air.
-    drawCylS(world * translate(0.0f, turnY - 0.085f, LIFT_Z)
+    drawCylS(world * translate(0.0f, discTopY - 0.085f, LIFT_Z)
         * scale(TURN_D - 0.22f, 0.080f, TURN_D - 0.22f), C_LIFT_BLUE_D, 0.0f, 0.35f, 0.58f);
     // Index marks: flat painted white stripes, not raised bars and not
     // yellow - against the blue disc and the yellow runway either side, white
@@ -4339,7 +4346,7 @@ void Scene::drawScene(float doorOffset,
     // either surface.  A tyre drives across this plate, so nothing on it may
     // stand proud.
     for (int i = 0; i < 8; ++i)
-        drawCube(world * translate(0.0f, turnY + 0.003f, LIFT_Z)
+        drawCube(world * translate(0.0f, discTopY + 0.003f, LIFT_Z)
             * rotateY(service.carYaw + static_cast<float>(i) * 45.0f)
             * place(Vec3(1.76f, 0.0f, 0.0f), Vec3(0.46f, 0.006f, 0.075f)),
             C_WHITE_LINE, 0.0f, 0.0f, 0.55f, MAT_PAINT);

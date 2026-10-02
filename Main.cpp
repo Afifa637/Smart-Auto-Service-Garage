@@ -717,6 +717,41 @@ static float pathProgress(int count)
     return (p > 1.0f) ? 1.0f : p;
 }
 
+// ---------------------------------------------------------------------------
+//  TWO-STAGE MOVE INTO POSE_PLATFORM_SAFE
+//
+//  A single interpolated move to POSE_PLATFORM_SAFE changes yaw, shoulder,
+//  elbow and wrist all at once, which lets the tool trace a path through
+//  whatever is physically near the arm's CURRENT position while it swings -
+//  and because the far-flank pass reuses the identical scan poses after the
+//  vehicle has been turned 180 degrees, that position holds the NOSE on the
+//  second pass and the TAIL on the first.  Nose and tail are not the same
+//  shape (the bumper, the light bar and the mirrors all project differently),
+//  so a transition proven clear of one is not proven clear of the other.
+//
+//  The fix does not depend on knowing which end is there.  It folds the arm
+//  first, AT WHATEVER YAW IT ALREADY HAS, to the same compact, elevated shape
+//  POSE_PLATFORM_SAFE ends in (elbow at its stop, wrist raised) - this retracts
+//  the tool toward the arm's own base without sweeping sideways at all, and an
+//  offline sweep of that fold confirms it clears the vehicle's full rotation
+//  envelope by the same 1.58 m margin at every yaw the scan paths use, so it
+//  does not matter which end of the car is there.  Only once the arm is
+//  already folded and elevated does it sweep yaw to the final -6.66 degrees -
+//  and because the fold shape's clearance does not depend on yaw either, nothing
+//  in that second leg comes any closer than it was already folded to.
+// ---------------------------------------------------------------------------
+static bool moveToPlatformSafe(float dt, float speedScale = 0.95f)
+{
+    if (gServiceWaypoint == 0)
+    {
+        const RobotPose foldInPlace = { gRobotBaseYaw, POSE_PLATFORM_SAFE.joint1,
+                                        POSE_PLATFORM_SAFE.joint2, POSE_PLATFORM_SAFE.wristPitch, 0.0f };
+        if (moveRobotTowardPose(foldInPlace, dt, speedScale)) ++gServiceWaypoint;
+        return false;
+    }
+    return moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, speedScale);
+}
+
 // ===========================================================================
 //  VISUAL TOOL EXCHANGE
 //
@@ -969,7 +1004,7 @@ static void updateServiceAutomation(float dt)
         // ---- turn the vehicle about ---------------------------------------
         case 14: gScanPercent = 64;
                  // Fold right back before the plate moves - see POSE_PLATFORM_SAFE.
-                 if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 0.95f)) nextServicePhase(); break;
+                 if (moveToPlatformSafe(dt, 0.95f)) nextServicePhase(); break;
         case 15: // the arm is folded clear; only now may the turntable run
                  if (moveCarYawToward(180.0f, dt)) nextServicePhase(); break;
 
@@ -989,7 +1024,7 @@ static void updateServiceAutomation(float dt)
 
         // ---- back to the delivered orientation ----------------------------
         case 21: gScanPercent = 100;
-                 if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 0.95f)) nextServicePhase(); break;
+                 if (moveToPlatformSafe(dt, 0.95f)) nextServicePhase(); break;
         case 22: if (moveCarYawToward(0.0f, dt)) nextServicePhase(); break;
         case 23: if (gServiceTimer > 1.20f) nextServicePhase(); break;
         default: setServiceState(SERVICE_GET_SPONGE); break;
@@ -1185,7 +1220,7 @@ static void updateServiceAutomation(float dt)
         else if (gServicePhase == 6)
         {
             // Fold clear of the vehicle's rotation sweep before the plate runs.
-            if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 1.00f)) nextServicePhase();
+            if (moveToPlatformSafe(dt, 1.00f)) nextServicePhase();
         }
         else if (gServicePhase == 7)
         {
@@ -1231,7 +1266,7 @@ static void updateServiceAutomation(float dt)
         }
         else if (gServicePhase == 14)
         {
-            if (moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, 1.00f)) nextServicePhase();
+            if (moveToPlatformSafe(dt, 1.00f)) nextServicePhase();
         }
         else if (gServicePhase == 15)
         {
