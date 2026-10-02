@@ -305,3 +305,81 @@ plausible-looking replacement: the fold-up sweep was checked at the real
 1.10 m service lift height, at the exact far-flank yaw the reused scan path
 leaves the arm at, and the full automatic sequence was run to SERVICE
 COMPLETE to confirm all four platform rotations complete without a stall.
+
+## 12. v10.4 — the arm really goes up, and the lower body is rebuilt
+
+### Why the previous two collision fixes did not work
+
+Both were verified with an offline arm model that did not match the game. The
+shoulder tilt direction was mirrored (`rotateZ(+a)` tilts +Y toward **-X** in
+Math3D.h, and the model assumed +X), and the tool was pointed along the wrong
+axis (the tool hangs along the wrist frame's **-Y**). The pose that model
+called "1.58 m clear" actually pointed the forearm down beside the car with
+the tool near the lift: re-checked with the real kinematics it sits **0.44 m
+inside** the vehicle's rotation volume.
+
+The checker is now a line-for-line port of `robotSafetyPoints()` /
+`yawRobotPoint()` in Main.cpp, against the vehicle's master profile at the
+real 1.10 m service lift height. It is calibrated against a known case: a
+scan pose at its designed stand-off reads exactly 0.000.
+
+### The new platform pose: mast up, boom out
+
+`POSE_PLATFORM_UP = { 180, 0, -90, 180 }` stands the shoulder link vertical
+over its base and lays the forearm flat at 5.55 m, pointing away from the car
+over the tool rack, tool held level along it. The two links total 8.5 m in a
+7 m room, so "fully up" is a vertical mast with a horizontal boom.
+
+It is reached in three moves and left in three moves:
+
+| Stage | Into the pose | Out of the pose |
+|---|---|---|
+| 1 | pull back: shoulder leans 25 deg away, drawing the tool off the panel | swing to the target's yaw while still high |
+| 2 | raise: mast vertical, boom level, at the same yaw | lower into the working shape, still leaning back |
+| 3 | swing the base to 180 deg | lean in to the panel |
+
+Verified clearances (car / fixed scenery):
+
+- during the full 0-180 degree turn: **1.33 m / 0.91 m**
+- pull-back: rises monotonically from the contact point
+- raise: never below 0.71 m; swing: never below 1.51 m
+- descent: never below 1.06 m until the final approach to the stand-off
+- raised pose to the tool rack: 3.33 m
+
+### The lower body: one continuous black band
+
+The reference has a single black band wrapping the bottom of the truck - front
+fascia, sill, rear bumper - with the arch trims running down into it, and the
+stainless sitting on top. The model had instead:
+
+- arch trims whose legs stopped at hub height, reading as rainbows over the wheels
+- a black rocker bar at 0.40-0.55 m with daylight under it
+- two 12 cm-deep bumper boxes hanging under the nose and tail
+
+Rebuilt as a faceted, recessed wrap-around fascia and rear bumper, a chamfered
+sill at 0.22-0.36 m, and arch trims extended down to the band (and slimmed to
+the reference's ~9.5 cm). The stainless overlaps the top of the black by 2 cm
+so it reads as tucked under. Heights come from the ramp: chin 0.28 m and tail
+0.30 m clear the 13.2-degree approach and departure (the old boxes at 0.185
+and 0.175 m dug into the ramp and floor); sill 0.22 m clears the crest.
+
+### Side glass at the reference's proportions
+
+| Station | Reference | Was | Now |
+|---|---|---|---|
+| glass front | 23.7 % | 25 % | at the cowl (22.3 %) |
+| B-pillar | 45.1 % | 39 % | 45.6 % |
+| glass rear | 63.0 % | 59 % | 63.0 % |
+| rear edge lean | ~10 deg | ~43 deg | ~6 deg |
+
+The front window's top now follows the roof rail from the cowl over the apex
+to the B-pillar; it was a triangle cut by a straight diagonal, leaving a
+stainless wedge where most of the window should be.
+
+### Scan poses re-solved
+
+The v10 profile correction (hood +146 mm, apex forward) had left the front and
+windscreen scanner lenses 0.12-0.16 m off the surface, and two rear-quarter
+poses had always sat 35 mm off the top of the rear tyre. All four were backed
+off along their own viewing axes to the 0.22 m stand-off with their aim kept.
+Every service pose's arm links now stay at least 0.475 m from the body.

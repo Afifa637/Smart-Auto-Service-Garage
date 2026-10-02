@@ -330,14 +330,19 @@ static const RobotPose PATH_CLEAN_LOW[4] = {
 //  Note the elbow angle in all of them: the arm stays folded and compact
 //  rather than reaching out straight.
 // ===========================================================================
+// Four of these were re-solved after the body profile was re-measured: the
+// hood rose 146 mm and the roof apex moved forward, which had left the front
+// and windscreen lenses 0.12-0.16 m off the surface, and two rear-quarter
+// poses had always sat 35 mm off the top of the rear tyre.  Each was backed
+// off along its own viewing axis to the 0.22 m stand-off with its aim kept.
 static const RobotPose PATH_SCAN_FRONT[3] = {
-    {   26.06f,  -12.11f,   -96.15f,  132.25f, 0.0f },
+    {   26.06f,  -11.60f,   -95.96f,  131.55f, 0.0f },
     {   21.91f,   -9.51f,   -96.94f,  130.45f, 0.0f },
     {   17.50f,   -7.30f,   -97.18f,  128.48f, 0.0f },
 };
 static const RobotPose PATH_SCAN_WIND[3] = {
     {   12.47f,   -3.31f,  -100.83f,  142.13f, 0.0f },
-    {    5.80f,   -1.74f,  -100.12f,  139.86f, 0.0f },
+    {    5.80f,   -0.74f,   -99.97f,  138.71f, 0.0f },
     {   -0.66f,   -1.08f,   -98.59f,  137.66f, 0.0f },
 };
 static const RobotPose PATH_SCAN_ROOF[3] = {
@@ -356,8 +361,8 @@ static const RobotPose PATH_SCAN_LOWER[3] = {
     {  -18.59f,    3.99f,  -137.60f,  223.61f, 0.0f },
 };
 static const RobotPose PATH_SCAN_REAR[3] = {
-    {  -27.72f,    3.70f,  -132.39f,  218.69f, 0.0f },
-    {  -34.05f,    0.33f,  -129.19f,  218.86f, 0.0f },
+    {  -27.72f,    6.25f,  -134.63f,  218.37f, 0.0f },
+    {  -34.05f,    2.70f,  -131.47f,  218.77f, 0.0f },
     {  -39.04f,   -3.03f,  -125.72f,  218.75f, 0.0f },
 };
 
@@ -379,31 +384,38 @@ static const RobotPose POSE_SCAN_OUT       = {   -7.70f,   34.79f,  -129.51f,  1
 // the whole traverse off the paint.
 
 // ---------------------------------------------------------------------------
-//  PLATFORM ROTATION SAFE POSE
+//  PLATFORM ROTATION: THE ARM GOES UP AND OUT OF THE WAY
 //
-//  Before the turntable runs, the arm has to be clear of the volume the
-//  vehicle sweeps through.  That volume is not the vehicle's parked footprint:
-//  turning a 5.68 x 2.06 m body about its centre sweeps a CYLINDER of radius
+//  Turning the vehicle about the lift axis sweeps a CYLINDER of radius
+//  sqrt(2.84^2 + 1.03^2) = 3.02 m - the corners reach 2 m further toward the
+//  robot than the parked body does.  Nothing of the arm may be inside that
+//  cylinder below the roof line while the plate turns.
 //
-//      sqrt(2.84^2 + 1.03^2) = 3.02 m
+//  POSE_PLATFORM_UP stands the shoulder link vertical over its own base and
+//  lays the forearm flat at 5.55 m, pointing AWAY from the vehicle out over
+//  the tool rack, with the tool held level along it.  Every link is either
+//  4.6 m from the lift axis (the mast, which is on the base) or 1.6 m above
+//  the highest point of the vehicle (the boom) - verified against the car at
+//  every yaw from 0 to 180 degrees: 1.33 m clear of the body, 0.91 m clear of
+//  the ceiling fixtures, rear lifts and rack.  The 7 m ceiling is what limits
+//  the height: the two links together are 8.5 m long, so "fully up" means a
+//  vertical mast with a horizontal boom, not a vertical arm.
 //
-//  about the lift axis, so the corners reach 3.02 m out in every direction,
-//  including straight at the robot.
+//  The arm is BROUGHT here in three moves (moveToPlatformSafe):
 //
-//  This pose folds the elbow to its -150 degree stop and raises the wrist so
-//  the tool tip lifts to y = 2.53 m - clear OVER the vehicle's roof line
-//  rather than merely clear of it sideways - while the tip itself stays only
-//  1.68 m out from the arm's own base, well short of the tool rack. That
-//  combination (fold + lift) gives 1.58 m of clearance to the 3.02 m sweep
-//  cylinder, more than three times the bare minimum, which is what "move the
-//  arm up out of the way" means mechanically: raise the whole assembly above
-//  the swept volume instead of standing it just outside the rim of it.
+//    1. pull back  - the shoulder leans 25 degrees away from the vehicle,
+//                    which draws the tool straight off the panel it was on;
+//    2. raise      - at the same yaw, mast vertical and boom level;
+//    3. swing      - only now, with everything high, the base turns to 180.
 //
-//  The yaw is left where the scanning poses leave it: with the arm folded
-//  over its own base the yaw barely changes the clearance, so spinning the
-//  base would be motion for nothing.
+//  and taken back down the same way in reverse (platformDescend).  Doing it
+//  as one interpolated move is what caused the collisions: moving yaw,
+//  shoulder, elbow and wrist together lets the tool cut a path through
+//  whatever is beside the arm, and after the 180-degree turn that is the
+//  vehicle's NOSE, not the tail the poses were first tried against.
 // ---------------------------------------------------------------------------
-static const RobotPose POSE_PLATFORM_SAFE = {  -6.66f, -10.00f, -150.00f, 190.00f, 0.0f };
+static const RobotPose POSE_PLATFORM_UP = { 180.00f, 0.00f, -90.00f, 180.00f, 0.0f };
+static const float kPlatformPullBack = 25.0f;   // shoulder lean, degrees
 static const RobotPose POSE_SIDE_RETRACT   = {   -3.55f,   10.90f,  -139.01f,  218.11f, 0.0f };
 
 // Front-left wheel fastener poses.  Each pose is solved against the actual lug
@@ -718,38 +730,63 @@ static float pathProgress(int count)
 }
 
 // ---------------------------------------------------------------------------
-//  TWO-STAGE MOVE INTO POSE_PLATFORM_SAFE
-//
-//  A single interpolated move to POSE_PLATFORM_SAFE changes yaw, shoulder,
-//  elbow and wrist all at once, which lets the tool trace a path through
-//  whatever is physically near the arm's CURRENT position while it swings -
-//  and because the far-flank pass reuses the identical scan poses after the
-//  vehicle has been turned 180 degrees, that position holds the NOSE on the
-//  second pass and the TAIL on the first.  Nose and tail are not the same
-//  shape (the bumper, the light bar and the mirrors all project differently),
-//  so a transition proven clear of one is not proven clear of the other.
-//
-//  The fix does not depend on knowing which end is there.  It folds the arm
-//  first, AT WHATEVER YAW IT ALREADY HAS, to the same compact, elevated shape
-//  POSE_PLATFORM_SAFE ends in (elbow at its stop, wrist raised) - this retracts
-//  the tool toward the arm's own base without sweeping sideways at all, and an
-//  offline sweep of that fold confirms it clears the vehicle's full rotation
-//  envelope by the same 1.58 m margin at every yaw the scan paths use, so it
-//  does not matter which end of the car is there.  Only once the arm is
-//  already folded and elevated does it sweep yaw to the final -6.66 degrees -
-//  and because the fold shape's clearance does not depend on yaw either, nothing
-//  in that second leg comes any closer than it was already folded to.
+//  INTO AND OUT OF POSE_PLATFORM_UP - see the pose's own comment for why it
+//  is three separate moves.  Each stage is an ordinary moveRobotTowardPose;
+//  gServiceWaypoint counts the stages, so nothing else in the phase may use it.
 // ---------------------------------------------------------------------------
+static RobotPose gPlatformFrom;      // the pose the ascent started from
+
 static bool moveToPlatformSafe(float dt, float speedScale = 0.95f)
 {
     if (gServiceWaypoint == 0)
     {
-        const RobotPose foldInPlace = { gRobotBaseYaw, POSE_PLATFORM_SAFE.joint1,
-                                        POSE_PLATFORM_SAFE.joint2, POSE_PLATFORM_SAFE.wristPitch, 0.0f };
-        if (moveRobotTowardPose(foldInPlace, dt, speedScale)) ++gServiceWaypoint;
+        // Capture where the arm is once, before the first stage starts
+        // moving it, so the pull-back target does not chase the arm.
+        if (!gMove.active)
+        {
+            gPlatformFrom.yaw = gRobotBaseYaw;
+            gPlatformFrom.joint1 = gJoint1Angle;
+            gPlatformFrom.joint2 = gJoint2Angle;
+            gPlatformFrom.wristPitch = gWristPitch;
+            gPlatformFrom.wristRoll = 0.0f;
+        }
+        const RobotPose pullBack = { gPlatformFrom.yaw, gPlatformFrom.joint1 + kPlatformPullBack,
+                                     gPlatformFrom.joint2, gPlatformFrom.wristPitch, 0.0f };
+        if (moveRobotTowardPose(pullBack, dt, speedScale)) gServiceWaypoint = 1;
         return false;
     }
-    return moveRobotTowardPose(POSE_PLATFORM_SAFE, dt, speedScale);
+    if (gServiceWaypoint == 1)
+    {
+        const RobotPose raised = { gPlatformFrom.yaw, POSE_PLATFORM_UP.joint1,
+                                   POSE_PLATFORM_UP.joint2, POSE_PLATFORM_UP.wristPitch, 0.0f };
+        if (moveRobotTowardPose(raised, dt, speedScale)) gServiceWaypoint = 2;
+        return false;
+    }
+    return moveRobotTowardPose(POSE_PLATFORM_UP, dt, speedScale);
+}
+
+// The reverse: from POSE_PLATFORM_UP down onto a working pose.  `stage` is
+// owned by the caller (0, 1, 2) so the caller can run this after something
+// else in the same phase.
+static bool platformDescend(const RobotPose& to, int& stage, float dt, float speedScale = 0.90f)
+{
+    if (stage == 0)
+    {
+        // Swing round while still high.
+        const RobotPose overhead = { to.yaw, POSE_PLATFORM_UP.joint1,
+                                     POSE_PLATFORM_UP.joint2, POSE_PLATFORM_UP.wristPitch, 0.0f };
+        if (moveRobotTowardPose(overhead, dt, speedScale)) stage = 1;
+        return false;
+    }
+    if (stage == 1)
+    {
+        // Lower into the working shape, but still leaning back off the panel.
+        const RobotPose standOff = { to.yaw, to.joint1 + kPlatformPullBack,
+                                     to.joint2, to.wristPitch, 0.0f };
+        if (moveRobotTowardPose(standOff, dt, speedScale)) stage = 2;
+        return false;
+    }
+    return moveRobotTowardPose(to, dt, speedScale);   // lean in to the panel
 }
 
 // ===========================================================================
@@ -1003,10 +1040,22 @@ static void updateServiceAutomation(float dt)
 
         // ---- turn the vehicle about ---------------------------------------
         case 14: gScanPercent = 64;
-                 // Fold right back before the plate moves - see POSE_PLATFORM_SAFE.
+                 // Up and out of the way before the plate moves - see POSE_PLATFORM_UP.
                  if (moveToPlatformSafe(dt, 0.95f)) nextServicePhase(); break;
-        case 15: // the arm is folded clear; only now may the turntable run
-                 if (moveCarYawToward(180.0f, dt)) nextServicePhase(); break;
+        case 15: // the arm is raised clear; only now may the turntable run,
+                 // and only once it has stopped does the arm come back down.
+                 if (gServiceWaypoint == 0)
+                 {
+                     if (moveCarYawToward(180.0f, dt)) gServiceWaypoint = 1;
+                 }
+                 else
+                 {
+                     int stage = gServiceWaypoint - 1;
+                     const bool down = platformDescend(PATH_SCAN_UPPER[0], stage, dt);
+                     gServiceWaypoint = stage + 1;
+                     if (down) nextServicePhase();
+                 }
+                 break;
 
         // ---- far flank, same poses, opposite side of the vehicle ----------
         case 16: gServiceVisual.scanProgress = pathProgress(3);
@@ -1228,7 +1277,11 @@ static void updateServiceAutomation(float dt)
         }
         else if (gServicePhase == 8)
         {
-            if (moveRobotTowardPose(PATH_LINE_HIGH[0], dt, 0.80f)) nextServicePhase();
+            // Down from POSE_PLATFORM_UP in stages, now the plate has stopped.
+            int stage = gServiceWaypoint;
+            const bool down = platformDescend(PATH_LINE_HIGH[0], stage, dt, 0.80f);
+            gServiceWaypoint = stage;
+            if (down) nextServicePhase();
         }
         else if (gServicePhase == 9)
         {

@@ -758,7 +758,6 @@ static const float CT_BED_FRONT_Z=  0.760f;  // front wall of the vault / tonnea
 static const float CT_TAIL_Z     =  2.800f;  // tailgate plane
 
 static const float CT_FLOOR_Y      = 0.300f; // rocker underside at the nose
-static const float CT_FLOOR_REAR_Y = 0.410f; // rocker underside at the tail
 static const float CT_NOSE_TOP_Y   = 0.951f; // top of the front fascia (measured)
 static const float CT_COWL_Y       = 1.254f; // windscreen base (measured)
 static const float CT_BELT_Y       = 1.150f; // belt line / bottom of the glazing
@@ -767,7 +766,30 @@ static const float CT_APEX_Y       = 1.791f; // roof apex - the real car is 1.79
 static const float CT_ROOF_R_Y     = 1.704f;
 static const float CT_BACKLIGHT_Y  = 1.455f;
 static const float CT_BED_RAIL_Y   = 1.260f; // bed rail AT THE TAIL - the rail slopes
-static const float CT_TAIL_BOT_Y   = 0.430f;
+static const float CT_TAIL_BOT_Y   = 0.300f; // stainless skin bottom at the tail
+
+// ---- the black lower band ---------------------------------------------------
+//  On the real vehicle one continuous black band wraps the bottom of the body:
+//  front fascia -> sill -> rear bumper, with the arch trims running down into
+//  it.  The stainless sits ON that band.  Its heights are set by what the
+//  vehicle physically has to do on the 13.2-degree lift ramp, not by eye:
+//
+//      chin   0.28 m   front overhang 1.07 m x tan(13.2) = 0.25 m needed
+//      tail   0.30 m   rear  overhang 1.13 m x tan(13.2) = 0.27 m needed
+//      sill   0.22 m   breakover over the ramp crest needs > 0.20 m
+//
+//  The two bumper boxes this replaces bottomed at 0.185 and 0.175 m, so the
+//  nose dug into the ramp and the tail into the floor during the climb.
+static const float CT_FRONT_BLACK_TOP_Y = 0.600f;
+static const float CT_REAR_BLACK_TOP_Y  = 0.620f;
+static const float CT_SILL_BOT_Y        = 0.220f;
+static const float CT_SILL_TOP_Y        = 0.360f;
+// The stainless overlaps the top of the black by this much, so the black reads
+// as tucked UNDER the shell with no gap showing between them.
+static const float CT_STEEL_OVERLAP      = 0.020f;
+// Where the black end pieces meet the wheel-arch trims, as an offset from each
+// axle.  The arch trim's outer legs sit at 0.665-0.690, so 0.670 overlaps them.
+static const float CT_ARCH_REACH         = 0.670f;
 
 static const float CT_X_BODY  = 1.030f;  // half width of the stainless side skin
 static const float CT_X_GLASS = 1.006f;  // side glazing sits ~24 mm inboard
@@ -778,12 +800,16 @@ static const float CT_X_ROOF  = 0.992f;  // roof and tonneau half width
 // The greenhouse is short and sits well forward: behind the rear door glass
 // the Cybertruck carries an unusually large stainless sail panel, and getting
 // that proportion right matters more to the silhouette than any other detail.
-// These move forward with the apex.  The cabin sits AHEAD of the roof peak on
-// this vehicle, and behind it is the long stainless sail panel.
-static const float CT_DLO_FRONT_Z    = -1.380f; // front bottom corner, on the belt
-static const float CT_DLO_REAR_Z     =  0.540f; // rear bottom corner, on the belt
-static const float CT_DLO_REAR_TOP_Z =  0.080f; // rear top corner, under the roof rail
-static const float CT_B_PILLAR_Z     = -0.560f;
+// Side glass stations, measured off Reference/03_reference_side.png as fractions
+// of overall length: glass starts 23.7%, B-pillar 45.1%, glass ends 63.0%.
+// The front window is the LARGE one, reaching past the roof apex; behind the
+// rear window is the long stainless sail panel.  The glass starts at the cowl,
+// where the A-pillar line comes down to the belt, so the front corner is the
+// sharp point the real truck has rather than a separate stainless wedge.
+static const float CT_DLO_FRONT_Z    = CT_COWL_Z; // front corner, at the cowl
+static const float CT_DLO_REAR_Z     =  0.750f; // rear bottom corner, on the belt
+static const float CT_DLO_REAR_TOP_Z =  0.700f; // rear top corner - near-vertical rear edge
+static const float CT_B_PILLAR_Z     = -0.260f;
 static const float CT_B_PILLAR_HALF  =  0.028f;
 static const float CT_ROOF_RAIL_T    =  0.088f; // stainless left above the glass
 
@@ -2202,24 +2228,33 @@ namespace
         //  `wheelRadius` above the axle, so the opening is kept at +0.505 and
         //  the outer edge raised to +0.600 instead - which puts the crown just
         //  under the belt line at 1.105, matching the reference photographs.
-        const YZ outer[6] = {
-            { wheelRadius + 0.020f, -0.680f },
+        //  The legs now run all the way down to the black lower band.  They
+        //  used to stop at hub height, so each arch read as a rainbow hanging
+        //  over its wheel; on the real vehicle the trim frames the tyre on both
+        //  sides and plugs straight into the sill and the bumpers.
+        const int N = 8;
+        const YZ outer[N] = {
+            { 0.235f,               -0.690f },
+            { wheelRadius + 0.020f, -0.665f },
             { wheelRadius + 0.330f, -0.580f },
             { wheelRadius + 0.600f, -0.335f },
             { wheelRadius + 0.600f,  0.335f },
             { wheelRadius + 0.330f,  0.580f },
-            { wheelRadius + 0.020f,  0.680f }
+            { wheelRadius + 0.020f,  0.665f },
+            { 0.235f,                0.690f }
         };
-        const YZ inner[6] = {
-            { wheelRadius + 0.015f, -0.560f },
+        const YZ inner[N] = {
+            { 0.235f,               -0.595f },
+            { wheelRadius + 0.015f, -0.570f },
             { wheelRadius + 0.280f, -0.475f },
             { wheelRadius + 0.505f, -0.268f },
             { wheelRadius + 0.505f,  0.268f },
             { wheelRadius + 0.280f,  0.475f },
-            { wheelRadius + 0.015f,  0.560f }
+            { wheelRadius + 0.015f,  0.570f },
+            { 0.235f,                0.595f }
         };
 
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < N - 1; ++i)
         {
             Vec3 oo0(xOuter, outer[i].y,     axleZ + outer[i].z);
             Vec3 oo1(xOuter, outer[i + 1].y, axleZ + outer[i + 1].z);
@@ -2257,10 +2292,10 @@ namespace
         Vec3 iiF(xInner, inner[0].y, axleZ + inner[0].z);
         truckPushQuadAuto(out, ioF, ooF, oiF, iiF, Vec3(0.0f, 0.0f, -1.0f));
 
-        Vec3 ioR(xInner, outer[5].y, axleZ + outer[5].z);
-        Vec3 iiR(xInner, inner[5].y, axleZ + inner[5].z);
-        Vec3 oiR(xOuter, inner[5].y, axleZ + inner[5].z);
-        Vec3 ooR(xOuter, outer[5].y, axleZ + outer[5].z);
+        Vec3 ioR(xInner, outer[N - 1].y, axleZ + outer[N - 1].z);
+        Vec3 iiR(xInner, inner[N - 1].y, axleZ + inner[N - 1].z);
+        Vec3 oiR(xOuter, inner[N - 1].y, axleZ + inner[N - 1].z);
+        Vec3 ooR(xOuter, outer[N - 1].y, axleZ + outer[N - 1].z);
         truckPushQuadAuto(out, ioR, iiR, oiR, ooR, Vec3(0.0f, 0.0f, 1.0f));
     }
 
@@ -2329,24 +2364,64 @@ namespace
         // ------------------------------------------------------------------
         for (int side = -1; side <= 1; side += 2)
         {
-            const CtProfilePoint R1[5] = {
-                { CT_NOSE_Z,  CT_NOSE_TOP_Y },
-                { zBeltCross, CT_BELT_Y },
-                { CT_TAIL_Z,  CT_BELT_Y },
-                { CT_TAIL_Z,  CT_TAIL_BOT_Y },
-                { CT_NOSE_Z,  CT_FLOOR_Y }
+            // The lower skin, in three convex pieces.  Between the arches it
+            // runs down behind the sill; ahead of the front arch and behind
+            // the rear arch it stops just below the top of the black fascia,
+            // so the fascia can sit recessed UNDER it instead of being hidden
+            // behind a skin that ran all the way down.
+            const float zArchF = CAR_FAXLE_Z - CT_ARCH_REACH;
+            const float zArchR = CAR_RAXLE_Z + CT_ARCH_REACH;
+            const float yFrontSkin = CT_FRONT_BLACK_TOP_Y - CT_STEEL_OVERLAP;
+            const float yRearSkin  = CT_REAR_BLACK_TOP_Y  - CT_STEEL_OVERLAP;
+            const CtProfilePoint R1f[4] = {
+                { CT_NOSE_Z, CT_NOSE_TOP_Y },
+                { zArchF,    ctRoofLineY(zArchF) },
+                { zArchF,    yFrontSkin },
+                { CT_NOSE_Z, yFrontSkin }
             };
-            truckPushSidePanel(sides, side, R1, 5);
+            truckPushSidePanel(sides, side, R1f, 4);
+            const CtProfilePoint R1m[5] = {
+                { zArchF,     ctRoofLineY(zArchF) },
+                { zBeltCross, CT_BELT_Y },
+                { zArchR,     CT_BELT_Y },
+                { zArchR,     CT_FLOOR_Y },
+                { zArchF,     CT_FLOOR_Y }
+            };
+            truckPushSidePanel(sides, side, R1m, 5);
+            const CtProfilePoint R1r[4] = {
+                { zArchR,    CT_BELT_Y },
+                { CT_TAIL_Z, CT_BELT_Y },
+                { CT_TAIL_Z, yRearSkin },
+                { zArchR,    yRearSkin }
+            };
+            truckPushSidePanel(sides, side, R1r, 4);
 
-            const CtProfilePoint R2[5] = {
+            // Ahead of the glass: the wing between the hood line and the belt.
+            const CtProfilePoint R2[3] = {
                 { zBeltCross,     CT_BELT_Y },
                 { CT_DLO_FRONT_Z, CT_BELT_Y },
-                { zBpF,           dloTopY(zBpF) },
-                { zBpF,           ctRoofLineY(zBpF) },
                 { CT_COWL_Z,      CT_COWL_Y }
             };
-            truckPushSidePanel(sides, side, R2, 5);
+            truckPushSidePanel(sides, side, R2, 3);
 
+            // Roof rail over the front glass, split at the apex kink so each
+            // fan stays convex: cowl -> apex, then apex -> B-pillar.
+            const CtProfilePoint R2b[4] = {
+                { CT_COWL_Z, dloTopY(CT_COWL_Z) },
+                { CT_APEX_Z, dloTopY(CT_APEX_Z) },
+                { CT_APEX_Z, CT_APEX_Y },
+                { CT_COWL_Z, CT_COWL_Y }
+            };
+            truckPushSidePanel(sides, side, R2b, 4);
+            const CtProfilePoint R4a[4] = {
+                { CT_APEX_Z, dloTopY(CT_APEX_Z) },
+                { zBpF,      dloTopY(zBpF) },
+                { zBpF,      ctRoofLineY(zBpF) },
+                { CT_APEX_Z, CT_APEX_Y }
+            };
+            truckPushSidePanel(sides, side, R4a, 4);
+
+            // B-pillar, belt to roof.
             const CtProfilePoint R3[4] = {
                 { zBpF, CT_BELT_Y },
                 { zBpR, CT_BELT_Y },
@@ -2355,32 +2430,25 @@ namespace
             };
             truckPushSidePanel(sides, side, R3, 4);
 
-            // The rail is split at the apex so no fan ever crosses the kink.
-            const CtProfilePoint R4a[4] = {
-                { zBpR,      ctRoofLineY(zBpR) },
-                { CT_APEX_Z, CT_APEX_Y },
-                { CT_APEX_Z, dloTopY(CT_APEX_Z) },
-                { zBpR,      dloTopY(zBpR) }
-            };
-            truckPushSidePanel(sides, side, R4a, 4);
-
+            // Roof rail over the rear glass.
             const CtProfilePoint R4b[4] = {
-                { CT_APEX_Z,         CT_APEX_Y },
-                { CT_DLO_REAR_TOP_Z, ctRoofLineY(CT_DLO_REAR_TOP_Z) },
+                { zBpR,              dloTopY(zBpR) },
                 { CT_DLO_REAR_TOP_Z, dloTopY(CT_DLO_REAR_TOP_Z) },
-                { CT_APEX_Z,         dloTopY(CT_APEX_Z) }
+                { CT_DLO_REAR_TOP_Z, ctRoofLineY(CT_DLO_REAR_TOP_Z) },
+                { zBpR,              ctRoofLineY(zBpR) }
             };
             truckPushSidePanel(sides, side, R4b, 4);
 
-            const CtProfilePoint R5[6] = {
+            // Sail panel and bed side, behind the glass.  The roof is one
+            // straight line from the apex to the tail, so this is convex.
+            const CtProfilePoint R5[5] = {
                 { CT_DLO_REAR_TOP_Z, ctRoofLineY(CT_DLO_REAR_TOP_Z) },
-                { CT_ROOF_R_Z,       CT_ROOF_R_Y },
                 { CT_TAIL_Z,         CT_BED_RAIL_Y },
                 { CT_TAIL_Z,         CT_BELT_Y },
                 { CT_DLO_REAR_Z,     CT_BELT_Y },
                 { CT_DLO_REAR_TOP_Z, dloTopY(CT_DLO_REAR_TOP_Z) }
             };
-            truckPushSidePanel(sides, side, R5, 6);
+            truckPushSidePanel(sides, side, R5, 5);
         }
 
         // ------------------------------------------------------------------
@@ -2447,7 +2515,7 @@ namespace
         const float yBarTop  = CT_NOSE_TOP_Y - 0.004f;
         const float yBarBot  = CT_NOSE_TOP_Y - 0.052f;   // thinner channel: 48 mm, was 66 mm
         const float yFascia0 = 0.420f;            // meets the top of the bumper
-        const float ySteelSplit = 0.470f;          // stainless resumes above this
+        const float ySteelSplit = CT_FRONT_BLACK_TOP_Y - CT_STEEL_OVERLAP; // black fascia below
         const float zFasciaTop = CT_NOSE_Z + 0.012f;
         const float zFasciaBot = CT_NOSE_Z + 0.050f;
         // The raked plane is one continuous surface from the bumper to the
@@ -2457,14 +2525,6 @@ namespace
         // with no step between them.
         const float splitT = (ySteelSplit - yFascia0) / (yBarBot - yFascia0);
         const float zSplit = ctLerp(zFasciaBot, zFasciaTop, splitT);
-
-        // Thin dark transition seam, just above the bumper.
-        truckPushQuadAuto(fascia,
-            Vec3(-xFace, yFascia0,    zFasciaBot),
-            Vec3( xFace, yFascia0,    zFasciaBot),
-            Vec3( xFace, ySteelSplit, zSplit),
-            Vec3(-xFace, ySteelSplit, zSplit),
-            Vec3(0.0f, -0.25f, -1.0f));
 
         // Stainless lower hood/nose panel - the same raked plane, continuing
         // up to the light channel.  This is what used to be dark.
@@ -2482,12 +2542,6 @@ namespace
         {
             const float sx = static_cast<float>(side);
             const Vec3 cheekN(sx * 0.8f, 0.0f, -0.6f);
-            truckPushQuadAuto(fascia,
-                Vec3(sx * xFace, yFascia0,    zFasciaBot),
-                Vec3(sx * xB,    yFascia0,    CT_NOSE_Z),
-                Vec3(sx * xB,    ySteelSplit, CT_NOSE_Z),
-                Vec3(sx * xFace, ySteelSplit, zSplit),
-                cheekN);
             truckPushQuadAuto(body,
                 Vec3(sx * xFace, ySteelSplit, zSplit),
                 Vec3(sx * xB,    ySteelSplit, CT_NOSE_Z),
@@ -2505,12 +2559,15 @@ namespace
             Vec3(-xB, CT_NOSE_TOP_Y,  CT_NOSE_Z),
             Vec3(0.0f, 0.0f, -1.0f));
 
-        // Tailgate, raked very slightly outward at the bottom like the real car.
+        // Tailgate, raked very slightly outward at the bottom like the real
+        // car.  It stops just below the top of the black rear bumper, which
+        // sits recessed under it.
+        const float yGateBot = CT_REAR_BLACK_TOP_Y - CT_STEEL_OVERLAP;
         truckPushQuadAuto(body,
-            Vec3(-xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
+            Vec3(-xB, yGateBot,      CT_TAIL_Z),
             Vec3(-xB, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
             Vec3( xB, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
-            Vec3( xB, CT_TAIL_BOT_Y, CT_TAIL_Z),
+            Vec3( xB, yGateBot,      CT_TAIL_Z),
             Vec3(0.0f, 0.0f, 1.0f));
 
         // Underbody floor pan.  It closes the shell so nothing shows through
@@ -2547,17 +2604,17 @@ namespace
                 Vec3(x, CT_ROOF_R_Y, CT_ROOF_R_Z), Vec3(x, CT_BED_RAIL_Y, CT_TAIL_Z),
                 nSide, normalize(Vec3(0.0f, 1.0f, 0.25f)), 0.012f, 0.0035f);
 
-            // Rocker line along the bottom of the flank.
-            truckPushFoldRib(sides,
-                Vec3(x, CT_FLOOR_Y, CT_NOSE_Z), Vec3(x, CT_TAIL_BOT_Y, CT_TAIL_Z),
-                nSide, Vec3(0.0f, -1.0f, 0.0f), 0.012f, 0.003f);
+            // (The rocker fold rib along the old skin bottom is gone; the
+            // sill now forms that edge.)
 
-            // Vertical corner folds at the nose and the tailgate.
+            // Vertical corner folds at the nose and the tailgate, down to
+            // where the stainless meets the black.
             truckPushFoldRib(sides,
-                Vec3(x, CT_FLOOR_Y, CT_NOSE_Z), Vec3(x, CT_NOSE_TOP_Y, CT_NOSE_Z),
+                Vec3(x, CT_FRONT_BLACK_TOP_Y - CT_STEEL_OVERLAP, CT_NOSE_Z),
+                Vec3(x, CT_NOSE_TOP_Y, CT_NOSE_Z),
                 nSide, Vec3(0.0f, 0.0f, -1.0f), 0.011f, 0.003f);
             truckPushFoldRib(sides,
-                Vec3(x, CT_TAIL_BOT_Y, CT_TAIL_Z),
+                Vec3(x, CT_REAR_BLACK_TOP_Y - CT_STEEL_OVERLAP, CT_TAIL_Z),
                 Vec3(x, CT_BED_RAIL_Y, CT_TAIL_Z - 0.040f),
                 nSide, Vec3(0.0f, 0.0f, 1.0f), 0.011f, 0.003f);
 
@@ -2604,23 +2661,30 @@ namespace
             const float x = sx * xG;
             const Vec3 nSide(sx, 0.0f, 0.0f);
 
-            // Front door glass: long raked leading edge, vertical pillar edge.
-            truckPushTriN(glass,
-                Vec3(x, CT_BELT_Y + 0.012f,       CT_DLO_FRONT_Z + 0.030f),
-                Vec3(x, CT_BELT_Y + 0.012f,       zBpF - 0.006f),
-                Vec3(x, dloTopY(zBpF) - 0.008f,   zBpF - 0.006f),
-                nSide);
+            // Front door glass: its top edge follows the roof rail all the way
+            // from the cowl, over the apex, to the B-pillar - the large raked
+            // window of the real truck.  (It used to be a single triangle cut
+            // by a straight diagonal, which left a stainless wedge where most
+            // of the window should be.)
+            {
+                const Vec3 f0(x, CT_BELT_Y + 0.012f,             CT_DLO_FRONT_Z + 0.040f);
+                const Vec3 f1(x, CT_BELT_Y + 0.012f,             zBpF - 0.006f);
+                const Vec3 f2(x, dloTopY(zBpF) - 0.008f,         zBpF - 0.006f);
+                const Vec3 f3(x, dloTopY(CT_APEX_Z) - 0.008f,    CT_APEX_Z);
+                const Vec3 f4(x, dloTopY(CT_COWL_Z + 0.040f) - 0.004f, CT_COWL_Z + 0.040f);
+                truckPushTriN(glass, f0, f1, f2, nSide);
+                truckPushTriN(glass, f0, f2, f3, nSide);
+                truckPushTriN(glass, f0, f3, f4, nSide);
+            }
 
             // Rear door and quarter glass.
             const Vec3 r0(x, CT_BELT_Y + 0.012f, zBpR + 0.006f);
             const Vec3 r1(x, CT_BELT_Y + 0.012f, CT_DLO_REAR_Z - 0.030f);
             const Vec3 r2(x, dloTopY(CT_DLO_REAR_TOP_Z) - 0.008f,
                              CT_DLO_REAR_TOP_Z - 0.010f);
-            const Vec3 r3(x, dloTopY(CT_APEX_Z) - 0.008f, CT_APEX_Z);
-            const Vec3 r4(x, dloTopY(zBpR) - 0.008f,      zBpR + 0.006f);
+            const Vec3 r3(x, dloTopY(zBpR) - 0.008f, zBpR + 0.006f);
             truckPushTriN(glass, r0, r1, r2, nSide);
             truckPushTriN(glass, r0, r2, r3, nSide);
-            truckPushTriN(glass, r0, r3, r4, nSide);
         }
 
         // ------------------------------------------------------------------
@@ -2648,6 +2712,19 @@ namespace
                 Vec3(x, dloTopY(zBpR) + 0.010f, zBpR + 0.004f),
                 Vec3(x, CT_BELT_Y,              zBpR + 0.004f),
                 nSide);
+
+            // Thin black seal along the top of the glass, cowl to the rear
+            // corner, so the glazing reads as one dark band with a narrow
+            // A-pillar rather than as cut-out holes.
+            const float zs[4] = { CT_DLO_FRONT_Z, CT_APEX_Z, zBpF, CT_DLO_REAR_TOP_Z };
+            for (int k = 0; k < 3; ++k)
+            {
+                const float za = zs[k], zb = zs[k + 1];
+                truckPushQuadN(trim,
+                    Vec3(x, dloTopY(za) - 0.012f, za), Vec3(x, dloTopY(zb) - 0.012f, zb),
+                    Vec3(x, dloTopY(zb) + 0.006f, zb), Vec3(x, dloTopY(za) + 0.006f, za),
+                    nSide);
+            }
         }
 
         // ------------------------------------------------------------------
@@ -2661,10 +2738,122 @@ namespace
         // ------------------------------------------------------------------
         //  BUMPERS - full 3D blocks that project past the shell.
         // ------------------------------------------------------------------
-        truckPushBox(bumpers, -xB - 0.012f, xB + 0.012f, 0.185f, 0.420f,
-                     CT_NOSE_Z - 0.115f, CT_NOSE_Z + 0.010f);
-        truckPushBox(bumpers, -xB - 0.020f, xB + 0.020f, 0.175f, 0.445f,
-                     CT_TAIL_Z - 0.030f, CT_TAIL_Z + 0.105f);
+        //  The black lower band: wrap-around front fascia, sills, wrap-around
+        //  rear bumper.  Each end piece is a faceted shell - a raked face
+        //  inboard of the body, two angled corner facets, side faces running
+        //  back to the arch, and a top ledge and floor that close it.  The
+        //  ledge and floor are drawn as one convex hexagon each; their inner
+        //  part sits inside the closed body shell, so no seam can show.
+        // ------------------------------------------------------------------
+        {
+            const float xIn  = xB - 0.090f;              // end faces sit well inboard
+            const float xOut = xB - 0.006f;              // sides just inside the skin line
+            const float zArchF = CAR_FAXLE_Z - CT_ARCH_REACH;
+            const float zArchR = CAR_RAXLE_Z + CT_ARCH_REACH;
+
+            // One end piece.  `dir` is -1 at the nose, +1 at the tail.
+            auto endPiece = [&](float dir, float zEnd, float zArch, float yTop,
+                                float yBotFace, float yBotCorner, float yBotArch)
+            {
+                // Recessed: the top edge sits 5 cm behind the stainless above
+                // it and the chin tucks a further 6 cm under, so the black
+                // reads as UNDER the shell rather than bolted to its front.
+                const float zFaceTop = zEnd - dir * 0.050f;
+                const float zFaceBot = zEnd - dir * 0.110f;
+                const float zCorner  = zEnd - dir * 0.180f;
+
+                // Raked end face: its top leans out over the bottom.
+                truckPushQuadAuto(bumpers,
+                    Vec3(-xIn, yBotFace, zFaceBot), Vec3( xIn, yBotFace, zFaceBot),
+                    Vec3( xIn, yTop,     zFaceTop), Vec3(-xIn, yTop,     zFaceTop),
+                    Vec3(0.0f, -0.15f, dir));
+
+                for (int side = -1; side <= 1; side += 2)
+                {
+                    const float sx = static_cast<float>(side);
+                    // Angled corner facet: carries the end face round to the side.
+                    truckPushQuadAuto(bumpers,
+                        Vec3(sx * xIn,  yBotFace,   zFaceBot),
+                        Vec3(sx * xOut, yBotCorner, zCorner),
+                        Vec3(sx * xOut, yTop,       zCorner),
+                        Vec3(sx * xIn,  yTop,       zFaceTop),
+                        Vec3(sx * 0.7f, 0.0f, dir * 0.7f));
+                    // Side face, back to the wheel arch.
+                    truckPushQuadAuto(bumpers,
+                        Vec3(sx * xOut, yBotCorner, zCorner),
+                        Vec3(sx * xOut, yBotArch,   zArch),
+                        Vec3(sx * xOut, yTop,       zArch),
+                        Vec3(sx * xOut, yTop,       zCorner),
+                        Vec3(sx, 0.0f, 0.0f));
+                }
+
+                // Top ledge and floor, as convex hexagons.
+                const Vec3 topRing[6] = {
+                    Vec3(-xIn,  yTop, zFaceTop), Vec3( xIn,  yTop, zFaceTop),
+                    Vec3( xOut, yTop, zCorner),  Vec3( xOut, yTop, zArch),
+                    Vec3(-xOut, yTop, zArch),    Vec3(-xOut, yTop, zCorner) };
+                const Vec3 botRing[6] = {
+                    Vec3(-xIn,  yBotFace,   zFaceBot), Vec3( xIn,  yBotFace,   zFaceBot),
+                    Vec3( xOut, yBotCorner, zCorner),  Vec3( xOut, yBotArch,   zArch),
+                    Vec3(-xOut, yBotArch,   zArch),    Vec3(-xOut, yBotCorner, zCorner) };
+                for (int i = 1; i + 1 < 6; ++i)
+                {
+                    truckPushTriN(bumpers, topRing[0], topRing[i], topRing[i + 1], Vec3(0.0f, 1.0f, 0.0f));
+                    const Vec3 n = truckFaceNormal(botRing[0], botRing[i], botRing[i + 1], Vec3(0.0f, -1.0f, 0.0f));
+                    truckPushTriN(bumpers, botRing[0], botRing[i], botRing[i + 1], n);
+                }
+                // Back wall inside the wheel well.
+                truckPushQuadAuto(bumpers,
+                    Vec3(-xOut, yBotArch, zArch), Vec3( xOut, yBotArch, zArch),
+                    Vec3( xOut, yTop,     zArch), Vec3(-xOut, yTop,     zArch),
+                    Vec3(0.0f, 0.0f, -dir));
+            };
+
+            endPiece(-1.0f, CT_NOSE_Z, zArchF, CT_FRONT_BLACK_TOP_Y, 0.280f, 0.270f, 0.240f);
+            endPiece( 1.0f, CT_TAIL_Z, zArchR, CT_REAR_BLACK_TOP_Y,  0.300f, 0.290f, 0.260f);
+
+            // Sills, arch to arch.  A narrow faceted bar: outer face just proud
+            // of the skin, chamfered at the top back onto the stainless and
+            // at the bottom in under the body, so it reads as tucked beneath
+            // the shell rather than bolted to its side.
+            const float zS0 = CAR_FAXLE_Z + CT_ARCH_REACH;
+            const float zS1 = CAR_RAXLE_Z - CT_ARCH_REACH;
+            struct SillXY { float x; float y; };
+            const SillXY prof[5] = {
+                { xB - 0.002f,  CT_SILL_TOP_Y + 0.012f },  // meets the skin
+                { xB + 0.028f,  CT_SILL_TOP_Y - 0.018f },  // top chamfer
+                { xB + 0.028f,  CT_SILL_BOT_Y + 0.030f },  // outer face
+                { xB - 0.020f,  CT_SILL_BOT_Y },           // bottom chamfer
+                { xB - 0.180f,  CT_SILL_BOT_Y }            // underside
+            };
+            const Vec3 sillPref[4] = {
+                Vec3(0.6f, 1.0f, 0.0f), Vec3(1.0f, 0.0f, 0.0f),
+                Vec3(0.6f, -1.0f, 0.0f), Vec3(0.0f, -1.0f, 0.0f) };
+            for (int side = -1; side <= 1; side += 2)
+            {
+                const float sx = static_cast<float>(side);
+                for (int i = 0; i < 4; ++i)
+                {
+                    const Vec3 a(sx * prof[i].x,     prof[i].y,     zS0);
+                    const Vec3 b(sx * prof[i + 1].x, prof[i + 1].y, zS0);
+                    const Vec3 c(sx * prof[i + 1].x, prof[i + 1].y, zS1);
+                    const Vec3 d(sx * prof[i].x,     prof[i].y,     zS1);
+                    truckPushQuadAuto(bumpers, a, b, c, d,
+                        Vec3(sx * sillPref[i].x, sillPref[i].y, 0.0f));
+                }
+                // End caps, hidden by the arch trims but closed anyway.
+                for (int e = 0; e < 2; ++e)
+                {
+                    const float z = (e == 0) ? zS0 : zS1;
+                    const Vec3 n(0.0f, 0.0f, (e == 0) ? -1.0f : 1.0f);
+                    for (int i = 1; i + 1 < 5; ++i)
+                        truckPushTriN(bumpers,
+                            Vec3(sx * prof[0].x,     prof[0].y,     z),
+                            Vec3(sx * prof[i].x,     prof[i].y,     z),
+                            Vec3(sx * prof[i + 1].x, prof[i + 1].y, z), n);
+                }
+            }
+        }
 
         // ------------------------------------------------------------------
         //  LIGHT BARS
@@ -2728,26 +2917,24 @@ namespace
                     Vec3(sx * 0.6f, 0.0f, -0.8f));
             }
 
-            // NOTE: two bright driving-lamp clusters used to sit low in the
-            // bumper here.  The real vehicle has no such lamps - its entire
-            // front lighting is the single full-width blade above - and at
-            // this brightness the pair read unmistakably as a conventional
-            // car's headlights, which is the one thing the front must not
-            // look like.  They are left as dark recesses in the bumper.
-            for (int side = -1; side <= 1; side += 2)
+            // A single slim lower intake across the black fascia - the only
+            // feature the real front has down here.  (Two bright driving lamps
+            // used to sit low in the bumper; they read as a conventional car's
+            // headlights and were removed.)  It is drawn on the fascia's own
+            // raked plane, in the slightly glossier dark-grey moulding, so it
+            // reads as a separate recessed part of the black band.
             {
-                const float sx = static_cast<float>(side);
-                const float cx = sx * 0.560f;
-                const float hw = 0.150f;
-                const float yA = 0.268f, yB2 = 0.346f;
-                const float zL = CT_NOSE_Z - 0.118f;   // front face of the bumper
-
-                truckPushQuadN(lightRecess,
-                    Vec3(cx - hw - 0.018f, yA - 0.018f, zL + 0.004f),
-                    Vec3(cx + hw + 0.018f, yA - 0.018f, zL + 0.004f),
-                    Vec3(cx + hw + 0.018f, yB2 + 0.018f, zL + 0.004f),
-                    Vec3(cx - hw - 0.018f, yB2 + 0.018f, zL + 0.004f),
-                    Vec3(0.0f, 0.0f, -1.0f));
+                const float zTop = CT_NOSE_Z + 0.050f, zBot = CT_NOSE_Z + 0.110f;
+                const float yTop = CT_FRONT_BLACK_TOP_Y, yBot = 0.280f;
+                auto zAt = [&](float y)
+                {
+                    return zBot + (zTop - zBot) * (y - yBot) / (yTop - yBot) - 0.004f;
+                };
+                const float y0 = 0.360f, y1 = 0.455f, hx = 0.720f;
+                truckPushQuadAuto(fascia,
+                    Vec3(-hx, y0, zAt(y0)), Vec3( hx, y0, zAt(y0)),
+                    Vec3( hx, y1, zAt(y1)), Vec3(-hx, y1, zAt(y1)),
+                    Vec3(0.0f, -0.1f, -1.0f));
             }
         }
         {
@@ -2927,7 +3114,7 @@ void Scene::drawCar(const Mat4& parent, const Vec3& bodyColor, float sidePolish,
     //  otherwise unbroken flank, so getting their position right matters more
     //  than adding any extra decoration.
     // ---------------------------------------------------------------------
-    const float zDoorFront = CT_DLO_FRONT_Z;        // leading edge of the front door
+    const float zDoorFront = CAR_FAXLE_Z + 0.720f;  // just behind the front arch
     const float zDoorMid   = CT_B_PILLAR_Z;        // B-pillar cut
     const float zDoorRear  = CT_DLO_REAR_Z + 0.04f; // trailing edge of the rear door
 
@@ -2936,22 +3123,23 @@ void Scene::drawCar(const Mat4& parent, const Vec3& bodyColor, float sidePolish,
         const float sx = static_cast<float>(side);
         const float xSkin = sx * (CT_X_BODY + 0.003f);
 
-        // Rocker cladding ties the lower body into the fender flare depth.
-        drawCube(parent * place(Vec3(sx * (CT_X_BODY + 0.022f), 0.470f, 0.000f),
-            Vec3(0.050f, 0.150f, 2.180f)), trim, 0.0f, 0.0f, 0.82f, MAT_PLASTIC);
+        // (A black rocker bar used to sit here at hub height, 0.40-0.55 m,
+        // with daylight showing beneath it.  The sill is now part of the
+        // continuous black lower band built with the body mesh.)
 
-        // Three vertical shut lines from the rocker up to the belt.
+        // Three vertical shut lines, from the sill up to the belt.
         const float cuts[3] = { zDoorFront, zDoorMid, zDoorRear };
+        const float cutY0 = CT_SILL_TOP_Y + 0.010f, cutY1 = CT_BELT_Y - 0.010f;
         for (int c = 0; c < 3; ++c)
         {
-            drawCube(parent * place(Vec3(xSkin, 0.800f, cuts[c]),
-                Vec3(0.004f, 0.600f, 0.007f)), trim * 0.55f, 0.0f, 0.0f, 0.90f, MAT_PLASTIC);
+            drawCube(parent * place(Vec3(xSkin, (cutY0 + cutY1) * 0.5f, cuts[c]),
+                Vec3(0.004f, cutY1 - cutY0, 0.007f)), trim * 0.55f, 0.0f, 0.0f, 0.90f, MAT_PLASTIC);
         }
 
         // Flush handle recesses, just below the belt line on each door.
-        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, -0.620f),
+        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, CT_B_PILLAR_Z - 0.180f),
             Vec3(0.006f, 0.030f, 0.185f)), trim * 0.52f, 0.0f, 0.0f, 0.80f, MAT_PLASTIC);
-        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, 0.330f),
+        drawCube(parent * place(Vec3(xSkin, CT_BELT_Y - 0.135f, CT_DLO_REAR_Z - 0.150f),
             Vec3(0.006f, 0.030f, 0.185f)), trim * 0.52f, 0.0f, 0.0f, 0.80f, MAT_PLASTIC);
 
         // Charge-port door on the rear quarter.
