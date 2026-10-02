@@ -199,3 +199,50 @@ Clearance to the sweep cylinder is now **1.58 m**, roughly three times the
 previous margin, verified both at the three sampled rotation angles (0°, 90°,
 180°) and through the fold-up transition that reaches it from the end of the
 rear-scan path. Both are a direct render of the project's own pose, not a mock.
+
+## 10. v10.2 — the turntable colour, and the oversized front fascia
+
+### Turntable: blue, not yellow
+
+The rotating disc's top surface and its eight index marks were both in the
+same warm yellow as the fixed runway pads either side of it. With both
+surfaces reading as "the floor", the disc turning was easy to miss - nothing
+about its colour said "this is a separate machine". The disc top is now the
+lift's own blue (matching the scissor stack and base rails: blue = moving
+machinery), and the index marks are white, which reads against both the blue
+disc and the yellow runway. Nothing about the geometry changed, only the
+colours.
+
+### The front fascia was most of the front, not a bumper
+
+Measuring it against the reference: the dark zone ran from y 0.420 to
+y 0.881 - **46 cm of a 95 cm front face**, about three-quarters of the panel.
+On the real vehicle the black is confined to roughly the bottom third; above
+it the stainless shell continues almost to the apron.
+
+Most of what was labelled "fascia" is now stainless, on the same raked plane
+it always was (so the outer surface position is unchanged - this cannot
+affect the collision model or the calibrated robot poses, which are set from
+the body's outer bounds, not from where a colour boundary falls inside it).
+What remains dark is a thin transition seam (`y 0.420 .. 0.470`, 5 cm) right
+above the physical black bumper block, which is unchanged.
+
+```
+BEFORE                          AFTER
+y 0.947 .. 0.951  hood lip      y 0.947 .. 0.951  hood lip
+y 0.881 .. 0.947  light blade   y 0.881 .. 0.947  light blade  (also thinned: 66mm -> 48mm)
+y 0.420 .. 0.881  dark fascia   y 0.470 .. 0.881  STAINLESS lower nose  (new)
+                                 y 0.420 .. 0.470  dark transition seam (5 cm, was 46 cm)
+y 0.185 .. 0.420  black bumper  y 0.185 .. 0.420  black bumper  (unchanged)
+```
+
+### The mirrors had been left behind by the v10 profile correction
+
+`CT_DLO_FRONT_Z` (the front corner of the side glass, which is what v10
+measured and moved forward by 230 mm) is read by the window and pillar code,
+but the mirrors were still three hardcoded z coordinates from before that
+move - so after v10 they sat 230 mm aft of the actual A-pillar, floating over
+the fender rather than at the base of the front window. They are now
+positioned as offsets from `CT_DLO_FRONT_Z`, so a future change to the
+greenhouse geometry carries the mirrors with it instead of leaving them behind
+a second time.

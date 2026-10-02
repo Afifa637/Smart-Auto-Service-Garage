@@ -2427,43 +2427,73 @@ namespace
         // ------------------------------------------------------------------
         //  THE FRONT, IN LAYERS
         //
-        //  The previous version made the whole nose one flat stainless slab
-        //  running from the bumper to the hood.  On the real vehicle only the
-        //  HOOD is stainless: below its leading edge sits the light blade, and
-        //  below that a DARK GREY fascia panel raked back under the overhang,
-        //  finishing in the black bumper.  Rendering that panel as bright bare
-        //  steel is what made the front read as a featureless wall.
+        //  A GENUINE PROPORTION ERROR, not a material one: the dark zone used
+        //  to run from y 0.420 all the way to y 0.881 - 46 cm of a 95 cm front
+        //  face, which is most of the panel, not a bumper.  On the real
+        //  vehicle the black only occupies the bottom third or so; above it
+        //  the stainless shell itself continues almost all the way down to
+        //  the apron.  So most of what used to be "fascia" is now STAINLESS,
+        //  pushed into `body` rather than `fascia`, and only a slim band just
+        //  above the bumper - a real transition seam, not a panel - stays
+        //  dark.
         //
-        //      y 0.805            hood leading edge, stainless, overhangs
-        //      y 0.735 .. 0.801   full-width light blade, in its channel
-        //      y 0.420 .. 0.735   dark grey fascia, raked back 38 mm
+        //      y 0.947 .. 0.951   hood leading edge, stainless, overhangs
+        //      y 0.881 .. 0.947   full-width light blade, in its channel
+        //      y 0.470 .. 0.881   stainless lower hood/nose panel
+        //      y 0.420 .. 0.470   thin dark transition seam, raked back
         //      y 0.185 .. 0.420   black bumper, projecting forward
         // ------------------------------------------------------------------
         const float xFace    = xB - 0.055f;       // the nose is only slightly inboard
         const float yBarTop  = CT_NOSE_TOP_Y - 0.004f;
-        const float yBarBot  = CT_NOSE_TOP_Y - 0.070f;
+        const float yBarBot  = CT_NOSE_TOP_Y - 0.052f;   // thinner channel: 48 mm, was 66 mm
         const float yFascia0 = 0.420f;            // meets the top of the bumper
+        const float ySteelSplit = 0.470f;          // stainless resumes above this
         const float zFasciaTop = CT_NOSE_Z + 0.012f;
         const float zFasciaBot = CT_NOSE_Z + 0.050f;
+        // The raked plane is one continuous surface from the bumper to the
+        // light channel; only where the split falls changes which mesh batch
+        // (and so which colour) a given strip of it belongs to.  Interpolating
+        // z and the two y values together keeps both halves on that one plane
+        // with no step between them.
+        const float splitT = (ySteelSplit - yFascia0) / (yBarBot - yFascia0);
+        const float zSplit = ctLerp(zFasciaBot, zFasciaTop, splitT);
 
-        // Dark fascia panel, raked back so the hood lip stands proud of it.
+        // Thin dark transition seam, just above the bumper.
         truckPushQuadAuto(fascia,
-            Vec3(-xFace, yFascia0, zFasciaBot),
-            Vec3( xFace, yFascia0, zFasciaBot),
-            Vec3( xFace, yBarBot,  zFasciaTop),
-            Vec3(-xFace, yBarBot,  zFasciaTop),
+            Vec3(-xFace, yFascia0,    zFasciaBot),
+            Vec3( xFace, yFascia0,    zFasciaBot),
+            Vec3( xFace, ySteelSplit, zSplit),
+            Vec3(-xFace, ySteelSplit, zSplit),
             Vec3(0.0f, -0.25f, -1.0f));
 
-        // Angled cheeks tying the fascia out to the body sides.
+        // Stainless lower hood/nose panel - the same raked plane, continuing
+        // up to the light channel.  This is what used to be dark.
+        truckPushQuadAuto(body,
+            Vec3(-xFace, ySteelSplit, zSplit),
+            Vec3( xFace, ySteelSplit, zSplit),
+            Vec3( xFace, yBarBot,     zFasciaTop),
+            Vec3(-xFace, yBarBot,     zFasciaTop),
+            Vec3(0.0f, -0.25f, -1.0f));
+
+        // Angled cheeks tying the nose to the body sides - dark below the
+        // split, stainless above it, on the same plane as the panels they
+        // continue.
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
+            const Vec3 cheekN(sx * 0.8f, 0.0f, -0.6f);
             truckPushQuadAuto(fascia,
-                Vec3(sx * xFace, yFascia0, zFasciaBot),
-                Vec3(sx * xB,    yFascia0, CT_NOSE_Z),
-                Vec3(sx * xB,    yBarBot,  CT_NOSE_Z),
-                Vec3(sx * xFace, yBarBot,  zFasciaTop),
-                Vec3(sx * 0.8f, 0.0f, -0.6f));
+                Vec3(sx * xFace, yFascia0,    zFasciaBot),
+                Vec3(sx * xB,    yFascia0,    CT_NOSE_Z),
+                Vec3(sx * xB,    ySteelSplit, CT_NOSE_Z),
+                Vec3(sx * xFace, ySteelSplit, zSplit),
+                cheekN);
+            truckPushQuadAuto(body,
+                Vec3(sx * xFace, ySteelSplit, zSplit),
+                Vec3(sx * xB,    ySteelSplit, CT_NOSE_Z),
+                Vec3(sx * xB,    yBarBot,     CT_NOSE_Z),
+                Vec3(sx * xFace, yBarBot,     zFasciaTop),
+                cheekN);
         }
 
         // The stainless hood lip that overhangs the whole assembly, and the
@@ -2746,7 +2776,17 @@ namespace
 
         // ------------------------------------------------------------------
         //  MIRRORS - shallow triangular prisms at the base of the A-pillars.
+        //
+        //  Positioned off CT_DLO_FRONT_Z (the front corner of the glazing)
+        //  rather than hardcoded coordinates, so they track the A-pillar
+        //  whenever the greenhouse geometry is retuned - these were left
+        //  behind by the v10 profile correction, which moved the front of
+        //  the glass 230 mm forward and left the mirrors sitting over the
+        //  fender a-pillar's old location, behind where the glass now is.
         // ------------------------------------------------------------------
+        const float zMirrorA = CT_DLO_FRONT_Z - 0.080f;   // leading edge
+        const float zMirrorB = CT_DLO_FRONT_Z + 0.060f;   // widest point
+        const float zMirrorC = CT_DLO_FRONT_Z + 0.220f;   // trailing edge
         for (int side = -1; side <= 1; side += 2)
         {
             const float sx = static_cast<float>(side);
@@ -2754,12 +2794,12 @@ namespace
             const float xOut = sx * (xB + 0.205f);
             const Vec3 outN(sx, 0.0f, 0.0f);
 
-            Vec3 aIn (xIn,  1.150f, -1.230f);
-            Vec3 bIn (xIn,  1.322f, -1.090f);
-            Vec3 cIn (xIn,  1.162f, -0.930f);
-            Vec3 aOut(xOut, 1.150f, -1.230f);
-            Vec3 bOut(xOut, 1.322f, -1.090f);
-            Vec3 cOut(xOut, 1.162f, -0.930f);
+            Vec3 aIn (xIn,  1.150f, zMirrorA);
+            Vec3 bIn (xIn,  1.322f, zMirrorB);
+            Vec3 cIn (xIn,  1.162f, zMirrorC);
+            Vec3 aOut(xOut, 1.150f, zMirrorA);
+            Vec3 bOut(xOut, 1.322f, zMirrorB);
+            Vec3 cOut(xOut, 1.162f, zMirrorC);
 
             truckPushTriN(mirrorHousing, aOut, bOut, cOut, outN);
             truckPushTriN(mirrorHousing, cIn, bIn, aIn, -outN);
@@ -2769,9 +2809,9 @@ namespace
 
             const float xFaceM = sx * (xB + 0.207f);
             truckPushTriN(mirrorGlass,
-                Vec3(xFaceM, 1.168f, -1.198f),
-                Vec3(xFaceM, 1.300f, -1.090f),
-                Vec3(xFaceM, 1.176f, -0.962f), outN);
+                Vec3(xFaceM, 1.168f, zMirrorA + 0.032f),
+                Vec3(xFaceM, 1.300f, zMirrorB),
+                Vec3(xFaceM, 1.176f, zMirrorC - 0.032f), outN);
         }
 
         truckUpload(gTruckSideMesh, sides);
@@ -4282,19 +4322,27 @@ void Scene::drawScene(float doorOffset,
     // enough for the whole body would hang a metre into thin air on each side.
     const float turnY = liftTopY(liftHeight);
     const float TURN_D = 4.20f;
+    // The disc is painted in the lift's own blue, not the runway's yellow -
+    // the runway marks the fixed path a tyre drives; the blue marks the part
+    // that is a MACHINE and moves.  With both the same warm yellow, the plate
+    // used to read as more of the same floor rather than as a separate
+    // rotating object, so turning it was easy to miss.
     drawCylS(world * translate(0.0f, turnY - 0.025f, LIFT_Z)
-        * scale(TURN_D, 0.050f, TURN_D), C_LIFT_DARK * 1.25f, 0.0f, 0.55f, 0.52f, MAT_TREAD);
+        * scale(TURN_D, 0.050f, TURN_D), C_LIFT_BLUE_D * 1.35f, 0.0f, 0.42f, 0.50f, MAT_TREAD);
     // Skirt under the plate, so it reads as a thick rotating table carried by
     // the runways rather than as a disc hanging in mid-air.
     drawCylS(world * translate(0.0f, turnY - 0.085f, LIFT_Z)
         * scale(TURN_D - 0.22f, 0.080f, TURN_D - 0.22f), C_LIFT_BLUE_D, 0.0f, 0.35f, 0.58f);
-    // Index marks: flat painted stripes, not raised bars.  A tyre now drives
-    // across this plate, so nothing on it may stand proud.
+    // Index marks: flat painted white stripes, not raised bars and not
+    // yellow - against the blue disc and the yellow runway either side, white
+    // is the one colour that reads as "this moved" rather than blending into
+    // either surface.  A tyre drives across this plate, so nothing on it may
+    // stand proud.
     for (int i = 0; i < 8; ++i)
         drawCube(world * translate(0.0f, turnY + 0.003f, LIFT_Z)
             * rotateY(service.carYaw + static_cast<float>(i) * 45.0f)
             * place(Vec3(1.76f, 0.0f, 0.0f), Vec3(0.46f, 0.006f, 0.075f)),
-            C_LIFT_YELLOW, 0.0f, 0.0f, 0.62f, MAT_PAINT);
+            C_WHITE_LINE, 0.0f, 0.0f, 0.55f, MAT_PAINT);
 
     Mat4 serviceCar = world * translate(0.0f, turnY + carRampY, LIFT_Z + driveZ)
                     * rotateX(carPitch)
