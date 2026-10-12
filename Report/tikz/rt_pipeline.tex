@@ -1,0 +1,13 @@
+% Frame pipeline: garage state -> record -> textures -> ray-trace pass -> monitor / overlay.
+\begin{tikzpicture}[font=\small, node distance=5mm,
+  st/.style={draw, rounded corners=3pt, fill=gray!8, minimum height=10mm, text width=26mm, align=center, inner sep=2pt},
+  tc/.style={st, fill=smcyan!18},
+  ta/.style={st, fill=smamber!25},
+  arr/.style={-{Stealth[length=2mm]}, thick}]
+  \node[st] (s0) {animation state\\(lift, car, robot)};
+  \node[ta, right=of s0] (s1) {1.\ record\\same transforms,\\no drawing};
+  \node[st, right=of s1] (s2) {2.\ pack 2 float\\textures + chunk\\bounding spheres};
+  \node[tc, right=of s2] (s3) {3.\ ray-tracing\\fragment shader\\(per pixel)};
+  \node[st, right=of s3] (s4) {4.\ texture on the\\monitor / enlarged\\overlay (key 9)};
+  \foreach \a/\b in {s0/s1,s1/s2,s2/s3,s3/s4} \draw[arr] (\a) -- (\b);
+\end{tikzpicture}

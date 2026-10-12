@@ -1,0 +1,40 @@
+% Ray path of the inspection monitor: primary ray, nearest hit, shadow ray (blocked by a robot link; a blocker beyond the light is ignored).
+\begin{tikzpicture}[x=1cm,y=1cm,font=\small,
+  arr/.style={-{Stealth[length=2.2mm]}, line width=1.3pt},
+  lbl/.style={fill=white, inner sep=1.5pt}]
+  % floor
+  \draw[gray, line width=1pt] (-0.5,0) -- (13.9,0);
+  \foreach \x in {0,1,...,13} \draw[gray!60] (\x-0.5,0) -- (\x-0.8,-0.25);
+  % car underside + wheel
+  \fill[smsteel!55] (5.0,3.2) rectangle (10.4,3.65);
+  \node[above] at (7.7,3.65) {vehicle underside (triangles)};
+  \draw[fill=smsteel!80!black] (9.9,3.1) circle (0.55);
+  % lift stack
+  \draw[line width=3pt, smcyan!80!black] (5.4,0.1) -- (6.4,3.0);
+  \draw[line width=3pt, smcyan!55!black] (6.4,0.1) -- (5.4,3.0);
+  \node[below] at (5.9,0) {lift arm};
+  % camera and image plane
+  \node[draw, fill=smamber!35, rounded corners=2pt, minimum width=0.9cm, minimum height=0.6cm] (cam) at (0.4,1.2) {};
+  \node[below=2pt] at (cam.south) {inspection camera};
+  \draw[thick] (2.2,0.4) -- (2.2,2.4);
+  \node[below] at (2.2,0.4) {monitor pixels};
+  \fill (2.2,1.55) circle (2.2pt);
+  % primary ray
+  \draw[arr, smcyan!70!black] (0.4,1.2) -- (2.2,1.55);
+  \draw[arr, smcyan!70!black] (2.2,1.55) -- (7.1,3.18);
+  \node[lbl, text=smcyan!50!black] at (3.4,0.95) {1\; primary ray, nearest $t>0$};
+  \fill[smamber] (7.1,3.18) circle (3pt);
+  \node[above left=1pt] at (7.05,3.0) {hit $P$};
+  \draw[arr, smamber!70!black] (7.1,3.18) -- (7.1,2.35) node[below] {$\mathbf n$};
+  % light and shadow ray
+  \node[star, star points=8, star point ratio=2.0, fill=smamber, draw=smamber!60!black, minimum size=0.55cm] (L) at (11.0,0.9) {};
+  \node[right=3pt] at (L.east) {light $L$};
+  \draw[arr, dashed, black!70] (7.15,3.12) -- (L);
+  \node[lbl] at (10.9,2.75) {2\; shadow ray, $t<|L-P|$};
+  % blocker between (robot link)
+  \draw[fill=smsteel!40, rotate around={-30:(8.9,2.1)}] (8.5,1.6) rectangle (9.3,2.6);
+  \node[below] at (8.9,1.3) {robot link blocks it};
+  % blocker beyond the light (ignored)
+  \fill[gray!35] (13.0,0.3) rectangle (13.3,1.5);
+  \node[above] at (13.15,1.5) {beyond $L$: ignored};
+\end{tikzpicture}

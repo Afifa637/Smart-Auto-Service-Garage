@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 
@@ -14,24 +15,37 @@
 #include "Primitives.h"
 #include "SceneObjects.h"
 
-
 static int   gWidth = 1280;
 static int   gHeight = 720;
 static const char* kTitle = "SmartGarage AUTO SERVICE v6 - Cybertruck Realism / PBR Rendering";
-
 
 static Camera gCamera;
 static bool   gMouseCaptured = true;
 static bool   gFirstMouse = true;
 static double gLastX = 0.0;
 static double gLastY = 0.0;
+// True for offline captures: the frame must come from the command line alone,
+// so stray mouse or keyboard input must not move the camera.
+static bool   gInputLocked = false;
+// Scripted demonstration recorder (--demo); see SCRIPTED DEMONSTRATION below.
+static bool   gDemoActive = false;
+static int    gRtScale = 1;            // --rtscale: inspection-view resolution multiplier
+static bool   gDemoHeld[GLFW_KEY_LAST + 1] = { false };
+// A held key, either pressed on the keyboard or held by the demo script.
+static bool keyDown(GLFWwindow* window, int key)
+{
+    return gDemoHeld[key] || (!gInputLocked && glfwGetKey(window, key) == GLFW_PRESS);
+}
 
 //  Scene / display toggles
 static bool  gWireframe = false;
 
 // Rendering feature toggles.  Cook-Torrance PBR is the photoreal default; Gouraud remains
 // available as an explicit coursework comparison mode.
-static int   gShadingMode = 0; // 0 Cook-Torrance PBR, 1 legacy Gouraud
+static int   gShadingMode = 0; // 0 Cook-Torrance PBR, 1 Gouraud (per vertex), 2 Phong (per fragment)
+static const char* kShadingNames[3] = { "Cook-Torrance PBR (per fragment)",
+                                        "Gouraud (Phong model per vertex)",
+                                        "Phong (Phong model per fragment)" };
 static bool  gTexturesEnabled = true;
 static bool  gNormalMapsEnabled = true;
 static bool  gShadowsEnabled = true;
@@ -39,15 +53,6 @@ static bool  gReflectionsEnabled = true;
 static bool  gBloomEnabled = true;
 static float gExposure = 0.74f;
 
-// ---- SECTION R: presentation / rendering quality --------------------------
-// ---- PROJECTION ----------------------------------------------------------
-//  The scene was only ever drawn through a perspective frustum; the
-//  orthographic routine existed but was used solely to build the shadow map,
-//  where nobody could see it.  Being able to switch the VIEW projection makes
-//  the difference visible: under perspective the parallel runway edges
-//  converge towards a vanishing point, under orthographic they stay parallel
-//  and the vehicle loses all foreshortening - which is exactly why orthographic
-//  is what engineering elevations are drawn in.
 static bool  gOrthographic = false;
 static float gOrthoHalfHeight = 4.0f;   // vertical half-extent, world units
 
@@ -57,12 +62,20 @@ static float gBloomStrength = 0.14f;
 static float gVignette = 0.30f;
 static float gGrain = 0.006f;
 
-// Lighting presets.  The garage rig is the honest working-shop look; the
-// studio rig is a three-point setup aimed at the vehicle on the lift, which is
-// what a product render would use; night mode is a dim, cool, high-contrast
-// variant that shows off the emissive signature and the reflections.
 enum LightingPreset { LIGHT_WORKSHOP = 0, LIGHT_STUDIO, LIGHT_NIGHT, LIGHT_PRESET_COUNT };
 static LightingPreset gLightingPreset = LIGHT_WORKSHOP;
+// ---- ray-traced underbody inspection monitor (state; code further down) ----
+static bool  gRtEnabled = true;
+static bool  gRtLarge = false;          // key 9: enlarged inspection view
+static bool  gRtFull = false;           // capture only: overlay fills the frame
+static bool  gRtShadows = true;         // key -: inspection-light shadow rays
+static int   gRtPreset = 3;             // key =: camera preset; default follows the robot-side work area
+static float gRtYaw = 0.0f;             // Insert / Delete: orbit the camera
+static int   gRtLightIdx = 2;           // key PageDown: light preset; default inspection lamp is on robot side
+static bool  gRtLightCustom = false;    // numpad moves the light freely
+static Vec3  gRtLight(-2.6f, 0.60f, -6.0f);
+static void  rtApplySize();
+static bool gNight = false;   // key 0: constant daylight outside <-> night
 static const char* kLightingPresetNames[LIGHT_PRESET_COUNT] =
     { "Workshop", "Studio (3-point product rig)", "Night" };
 
@@ -87,12 +100,10 @@ enum TeachingObject {
 };
 static TeachingObject gTeachObject = TEACH_SCENE;
 static int gTeachStage = 0;
+static bool gTeachNoHighlight = false;   // capture-only: draw the stage without the amber highlight
 
-// Construction stages for the vehicle.  Each number is a cumulative draw-call
-// count, so the stages reveal the model in exactly the order drawCar() builds
-// it.  Keep this table in step with drawCar(): if a draw is added or removed
-// the limits move with it.
-static const int kCarLimits[]   = { 1, 2, 4, 5, 6, 7, 12, 26, 34, 162 };
+static const int kAllRemaining = 100000;
+static const int kCarLimits[]   = { 1, 2, 4, 5, 6, 7, 13, 25, 33, kAllRemaining };
 static const char* kCarStages[] = {
     "stainless side skin - one folded flank with the daylight opening cut out",
     "hood, angled front fascia, tailgate and underbody floor pan",
@@ -100,26 +111,26 @@ static const char* kCarStages[] = {
     "flush black belt-line seals and B-pillar blackout",
     "sealed five-facet 3D wheel-arch cladding",
     "full 3D protruding front + rear bumper blocks",
-    "recessed light channels + front white / rear red lens bars",
+    "light channels, front fascia, mirrors, front white / rear red lens bars",
     "rocker cladding, door shut-lines, flush handles, charge-port door",
     "bed-rail tie-downs riding the tapering vault rail",
     "four all-terrain wheels with tread blocks, aero covers + brake discs"
 };
 
-static const int kLiftLimits[]   = { 14, 39, 64, 66, 76, 86 };
+static const int kLiftLimits[]   = { 40, 81, 122, 124, 132, kAllRemaining };
 static const char* kLiftStages[] = {
     "base rails + anchors", "left scissor stack + hydraulic ram",
     "right scissor stack + hydraulic ram", "platform cross beams",
     "left runway", "right runway"
 };
 
-static const int kRobotLimits[]   = { 5, 7, 8, 9, 10, 14, 15, 17, 19, 28 };
+static const int kRobotLimits[]   = { 13, 15, 16, 17, 21, 27, 31, 35, 38, kAllRemaining };
 static const char* kRobotStages[] = {
-    "base plate + four bolts", "base column + status band", "turntable",
-    "shoulder yoke", "joint 1 disc", "lower arm + bands + cable",
-    "joint 2 disc", "upper arm", "wrist pitch/roll", "quick-change tool head"
+    "base plate + four anchor bolts", "pedestal column + status band", "turntable disc",
+    "shoulder yoke", "shoulder joint (barrel, flanges, sphere)", "lower arm + bands + cable conduit",
+    "elbow joint (barrel, flanges, sphere)", "forearm + band + conduit", "wrist sphere + block + coupler",
+    "quick-change tool head (scanner)"
 };
-
 
 //  ANIMATION PARAMETERS - constants for this stage, variables later.
 static float gDoorOffset = 0.0f;    // 4.9 = fully open, 0.0 = closed (the start state)
@@ -132,12 +143,7 @@ static float gJoint2Angle = -30.0f;   // elbow pitch
 static float gWristPitch = 74.0f;     // end-effector pitch (parks the head level)
 static float gWristRoll = 0.0f;       // end-effector roll
 static int   gRobotTool = 0;           // 0 scanner, 1 driver, 2 gripper, 3 polisher
-static float gFanAngle = 0.0f;
 
-// ---- SECTION I: INTERACTIVE SCENE SWITCHES --------------------------------
-//  These are the things an operator can actually switch in a workshop.  They
-//  live in one struct so the renderer never has to reach back into Main.cpp,
-//  and so the whole interactive state can be printed in one place.
 static Scene::SceneSwitches gSwitches;
 
 // Arrival animation: 1 = waiting outside on the apron, 0 = parked on the lift.
@@ -152,12 +158,6 @@ static const float kArmSpeed = 35.0f;
 static const float kBaseYawSpeed = 45.0f;  
 static const float kWristSpeed = 55.0f;   
 
-// ---------------------------------------------------------------------------
-// SIMPLE AUTOMATIC SERVICE DEMO
-//
-// ENTER starts one predefined finite-state sequence. The robot does not use
-// AI, path planning or runtime inverse kinematics.
-// ---------------------------------------------------------------------------
 enum ServiceState
 {
     SERVICE_IDLE = 0,
@@ -177,6 +177,7 @@ enum ServiceState
     SERVICE_ROBOT_HOME,
     SERVICE_LIFT_DOWN,
     SERVICE_DOOR_OPEN,
+    SERVICE_DRIVE_OUT,      // the serviced vehicle reverses out onto the apron
     SERVICE_COMPLETE
 };
 
@@ -197,34 +198,10 @@ static Scene::ServiceVisualState gServiceVisual;
 // Inspection coverage, 0..100, reported in the status line while scanning.
 static int gScanPercent = 0;
 
-// Hand-authored poses. These are deliberately fixed and easy to explain.
-// The scanner looks along the tool frame's -Y.  The total pitch at the tool is
-// joint1 + joint2 + wristPitch, so with a wrist pitch of 0 the head finished
-// the sequence pitched -74 degrees - lying on its side, aimed back across the
-// workshop.  Setting the wrist to +74 cancels the two arm joints exactly, so
-// the inspection head parks hanging level and looking straight down, the way a
-// gimbal-mounted sensor actually rests.
 static const RobotPose POSE_HOME          = {  60.0f, -44.0f,  -30.0f, 74.0f, 0.0f };
 // Compact retract pose.  The older "safe" pose actually stretched across the
 // vehicle.  This one folds the arm back toward its pedestal before any yaw.
 static const RobotPose POSE_SAFE_HIGH     = {   0.0f,  30.0f, -140.0f, 60.0f, 0.0f };
-// ===========================================================================
-//  TOOL RACK POSES
-//
-//  Every one of these is an exact analytic IK solution for "put the wrist
-//  straight above this dock, tool axis vertical".  A purely vertical approach
-//  is only possible because the rack's vertical backboard has been removed -
-//  with the board in place the arm had to come in from the side, which is what
-//  forced the long base rotations the sequence used to make.
-//
-//  HOVER sits 0.70 m above the dock; SEAT puts the tool's own lowest part
-//  exactly on the dock connector.  The two differ only in shoulder and elbow,
-//  so the descent onto a dock is a clean straight drop.
-//
-//  Note how strongly bent the elbow is in all of them (joint 2 between -116
-//  and -143): the rack is close to the base, so the arm folds up compactly
-//  instead of reaching out straight.
-// ===========================================================================
 static const RobotPose POSE_DOCK_HOVER[4] = {
     {  177.61f,  -15.56f,  -118.46f,  134.03f, 0.0f },   // scanner
     {  176.14f,    5.36f,  -137.92f,  132.56f, 0.0f },   // impact driver
@@ -241,36 +218,6 @@ static const RobotPose POSE_RACK_SAFE    = { -173.95f,  -4.68f, -127.77f, 132.45
 static const RobotPose POSE_SPONGE_HOVER = { -173.95f,  -6.42f, -128.85f, 135.27f, 0.0f };
 static const RobotPose POSE_SPONGE_GRASP = { -173.95f, -15.67f, -132.61f, 148.28f, 0.0f };
 
-// SIDE-PANEL WIPE PATHS - solved so the tool rides ON the paint.
-// =============================================================
-// Two separate faults had to be fixed here, both measured off the geometry
-// rather than guessed.
-//
-// 1. STAND-OFF SIGN.  The panel is at x = -1.030 and the robot works from
-//    OUTBOARD of it, which is the more negative side.  A stand-off therefore
-//    has to be subtracted, not added.  Adding it put every tool face 12 mm
-//    INSIDE the skin.
-//
-// 2. THE SWEEP BULGE.  A wipe used to be one long interpolation between two
-//    end poses.  Joint angles interpolate linearly; the tool tip does not -
-//    it swings through an arc that bulges toward the vehicle.  Measured at
-//    the midpoint of a full-length sweep that arc dipped up to 83 mm INTO the
-//    body, which is what put the tool head inside the panel on screen.
-//
-//    Splitting each wipe into three shorter segments cuts the sag by roughly
-//    the square of the segment count (83 / 3^2 ~ 9 mm), so with a 12 mm
-//    stand-off the tool now stays outboard for the whole pass.  Verified:
-//    the worst point of any sweep is 2.2 mm clear of the skin.
-//
-// Every waypoint below is the exact solution of a 4-DOF inverse kinematics
-// problem: with the tool axis horizontal the pitch at the tool is exactly 90
-// degrees, which collapses to "aim the arm plane at the target, then do a
-// plain two-link solve for the wrist".  Tool reach is measured to each tool's
-// own deepest point, not to the nominal 0.95 m stub the safety model uses:
-//
-//      polishing pad + rotation mark   wrist + 0.932 m
-//      cleaning sponge seam ring       wrist + 1.149 m
-//
 static const RobotPose PATH_LINE_HIGH[4] = {
     {    8.87f,   7.62f,  -132.90f,  215.27f, 0.0f },
     {    0.56f,   8.22f,  -133.39f,  215.17f, 0.0f },
@@ -308,33 +255,6 @@ static const RobotPose PATH_CLEAN_LOW[4] = {
     {  -15.77f,   6.00f,  -137.01f,  221.01f, 0.0f },
 };
 
-// The scanner is shorter than the polisher, so it simply follows the polishing
-// path - it ends up a few centimetres further off the panel, which is correct
-// for a non-contact sensor.
-
-// ===========================================================================
-//  SIX INSPECTION REGIONS
-//
-//  Scanning used to be one long interpolation along a single path, which both
-//  covered very little of the vehicle and risked sweeping the arm across it.
-//  The body is now divided into six regions, each entered and left through a
-//  staging pose so the arm never interpolates from one side of the vehicle to
-//  the other:
-//
-//      FRONT / HOOD      WINDSCREEN      ROOF
-//      UPPER SIDE        LOWER SIDE      REAR SIDE / BED
-//
-//  Every waypoint is an analytic IK solution for "put the LENS here, pitched
-//  this far from vertical", with the lens held 0.24 m off the surface.  The
-//  scanner body therefore never touches the paint - only its light reaches it.
-//  Note the elbow angle in all of them: the arm stays folded and compact
-//  rather than reaching out straight.
-// ===========================================================================
-// Four of these were re-solved after the body profile was re-measured: the
-// hood rose 146 mm and the roof apex moved forward, which had left the front
-// and windscreen lenses 0.12-0.16 m off the surface, and two rear-quarter
-// poses had always sat 35 mm off the top of the rear tyre.  Each was backed
-// off along its own viewing axis to the 0.22 m stand-off with its aim kept.
 static const RobotPose PATH_SCAN_FRONT[3] = {
     {   26.06f,  -11.60f,   -95.96f,  131.55f, 0.0f },
     {   21.91f,   -9.51f,   -96.94f,  130.45f, 0.0f },
@@ -366,86 +286,19 @@ static const RobotPose PATH_SCAN_REAR[3] = {
     {  -39.04f,   -3.03f,  -125.72f,  218.75f, 0.0f },
 };
 
-// Staging poses.  The top regions are entered and left through TOP_SAFE, the
-// side regions through SIDE_SAFE; going between the two groups passes through
-// both, which is what keeps the arm from descending through the roof.
 static const RobotPose POSE_SCAN_TOP_SAFE  = {   -5.59f,   -6.87f,   -78.44f,   91.31f, 0.0f };
 static const RobotPose POSE_SCAN_SIDE_SAFE = {   -6.66f,   24.28f,  -143.00f,  208.72f, 0.0f };
 
-// Going straight from the top group to the side group clipped the roof by
-// 97 mm, because interpolating between "above the car" and "beside the car"
-// cuts the corner between them.  This waypoint sits well OUTBOARD at roof
-// height, so the arm moves clear of the vehicle before it descends.
 static const RobotPose POSE_SCAN_OUT       = {   -7.70f,   34.79f,  -129.51f,  156.72f, 0.0f };
 
-// A single lift-off used between the side bands.  Running one band straight
-// into the next dragged the tool 78 mm through the door skin on the way back
-// to the start of the following band; stepping 0.35 m out in between keeps
-// the whole traverse off the paint.
-
-// ---------------------------------------------------------------------------
-//  PLATFORM ROTATION: THE ARM GOES UP, WHERE IT ALREADY IS
-//
-//  Turning the vehicle about the lift axis sweeps a CYLINDER of radius
-//  sqrt(2.84^2 + 1.03^2) = 3.02 m - the corners reach 2 m further toward the
-//  robot than the parked body does - so the arm has to be out of that volume
-//  below the roof line while the plate turns.
-//
-//  It does not have to be out of it ABOVE the roof line.  The shoulder link
-//  stands vertical over its base and the forearm lies level at 5.55 m, at the
-//  SAME yaw the arm was already working at, so the boom simply rises and
-//  stays over the vehicle while the vehicle turns beneath it.  Swinging the
-//  base round to face the other way (an earlier version) bought nothing but a
-//  long, slow, pointless rotation.  Verified against the car at every turn
-//  angle from 0 to 180 degrees, from both yaws the arm reaches this from:
-//  1.33 m clear of the highest point of the body, 0.91 m clear of the ceiling
-//  fixtures, rear lifts and rack.  The 7 m ceiling is what sets the height:
-//  the two links total 8.5 m, so "fully up" means a vertical mast with a
-//  level boom, not a vertical arm.
-//
-//  Reached in two moves (moveToPlatformSafe) and left in three
-//  (platformDescend):
-//
-//    up:    1. pull back - shoulder leans 25 degrees away, drawing the tool
-//                          straight off the panel it was on;
-//           2. raise     - mast vertical, boom level, same yaw.
-//    down:  1. swing     - to the next pose's yaw, while still high;
-//           2. lower     - into the working shape, still leaning back;
-//           3. lean in   - onto the panel.
-//
-//  Doing it as one interpolated move is what caused collisions: moving every
-//  joint at once lets the tool cut through whatever is beside the arm, and
-//  after the 180-degree turn that is the vehicle's NOSE, not the tail.
-// ---------------------------------------------------------------------------
 static const RobotPose POSE_PLATFORM_UP = { 0.00f, 0.00f, -90.00f, 180.00f, 0.0f };  // yaw: unchanged
 static const float kPlatformPullBack = 25.0f;   // shoulder lean, degrees
 static const RobotPose POSE_SIDE_RETRACT   = {   -3.55f,   10.90f,  -139.01f,  218.11f, 0.0f };
 
-// Front-left wheel fastener poses.  Each pose is solved against the actual lug
-// location on the rendered wheel, so the socket axis faces the hub and the tip
-// lands on the nut instead of passing through the tyre or rim.
-// TOOL REACH, AND WHY THESE NUMBERS CHANGED
-// -----------------------------------------
-// robotSafetyPoints() models every tool as a nominal 0.95 m stub on the end of
-// the wrist.  The impact driver is not: wrist -> tool frame is 0.16 m, tool
-// frame -> socket centre is 0.88 m, and the socket is 0.22 m long, so its tip
-// is 1.15 m from the wrist.  The previous lug poses were solved against the
-// 0.95 m model, which drove the real socket 0.21 m THROUGH the wheel face -
-// the tool visibly buried itself in the tyre during the tightening sequence.
-//
-// These poses keep the old tool DIRECTION exactly and pull the wrist back
-// along the tool axis by 0.23 m, which lands the socket tip on the outer face
-// of each lug nut (within 3 mm) instead of inside it.  As a nut seats it draws
-// 31 mm inboard, so the socket then closes over it - which is what a real
-// impact driver does.
 static const float kDriverTipReach = 1.15f;   // wrist -> socket tip, metres
 static const float kModelToolReach = 0.95f;   // what the safety model assumes
 
 static const RobotPose POSE_WHEEL_SAFE    = {  24.50f, 30.00f, -140.00f, 200.00f, 0.0f };
-// Re-solved for the corrected 0.450 m wheel: dropping the tyre from the old
-// 0.495 m moved the hub, and therefore every lug, 45 mm down.  Each pose is
-// the exact analytic solution that lands the socket tip on the nut face -
-// measured error is under 0.4 mm on all five.
 static const RobotPose POSE_LUG_1         = {  24.91f,  5.05f, -139.01f, 223.96f, 0.0f };
 static const RobotPose POSE_LUG_2         = {  23.17f,  4.53f, -140.31f, 225.79f, 0.0f };
 static const RobotPose POSE_LUG_3         = {  23.84f,  2.20f, -141.19f, 228.99f, 0.0f };
@@ -459,7 +312,6 @@ static const float kJoint2Min = -150.0f, kJoint2Max = 120.0f;
 static const float kBaseYawMin = -180.0f, kBaseYawMax = 180.0f;
 static const float kWristPitchMin = -270.0f, kWristPitchMax = 270.0f;
 static const float kWristRollMin = -180.0f, kWristRollMax = 180.0f;
-
 
 static float clampf(float v, float lo, float hi)
 {
@@ -476,22 +328,6 @@ static float moveToward(float current, float target, float maxDelta)
 
 static void setTeachingMode(TeachingObject obj); // forward declaration
 
-// ---------------------------------------------------------------------------
-//  DRIVE-OUT ANIMATION
-//
-//  The wheels are not free-spun: the spin angle is derived from the distance
-//  actually travelled, so a wheel of radius r turning through an angle A has
-//  rolled exactly r*A along the floor.  That is the difference between wheels
-//  that turn and wheels that look like they are driving.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-//  PASSING TRAFFIC
-//
-//  One vehicle loops across the forecourt opening.  Same rule as the serviced
-//  car: the wheels are not free-spun, their angle comes from the distance
-//  actually covered, so a wheel of radius r turning through angle A has rolled
-//  exactly r*A along the road.
-// ---------------------------------------------------------------------------
 static float shortestAngleDelta(float from, float to);   // defined below
 static float wrapAngle180(float a);                     // defined below
 
@@ -510,14 +346,14 @@ static bool moveCarYawToward(float target, float dt, float degPerSec = 34.0f)
     return false;
 }
 
-
 static void updateCarDrive(float dt)
 {
     const float before = gSwitches.carDrive;
     gSwitches.carDrive = moveToward(gSwitches.carDrive, gCarDriveTarget, kCarDriveSpeed * dt);
 
     const float travelled = (gSwitches.carDrive - before) * Scene::carDriveDistance();
-    const float wheelRadius = 0.495f;
+
+    const float wheelRadius = Scene::carWheelRadius();
     gSwitches.wheelSpin += (travelled / wheelRadius) * 180.0f / PI_F;
     if (gSwitches.wheelSpin > 360.0f)  gSwitches.wheelSpin = std::fmod(gSwitches.wheelSpin, 360.0f);
     if (gSwitches.wheelSpin < -360.0f) gSwitches.wheelSpin = std::fmod(gSwitches.wheelSpin, 360.0f);
@@ -571,6 +407,7 @@ static const char* serviceStatusText()
     case SERVICE_ROBOT_HOME:     return "service finished - robot returning HOME";
     case SERVICE_LIFT_DOWN:      return "SERVICE COMPLETE - lowering vehicle";
     case SERVICE_DOOR_OPEN:      return "SERVICE COMPLETE - opening garage door";
+    case SERVICE_DRIVE_OUT:      return "SERVICE COMPLETE - vehicle leaving the garage";
     case SERVICE_COMPLETE:       return "SERVICE COMPLETE - ENTER runs again; R resets";
     default:                     return "automatic service";
     }
@@ -588,25 +425,6 @@ static bool robotPoseReached(const RobotPose& p)
            std::fabs(shortestAngleDelta(gWristPitch, p.wristPitch)) < 0.65f &&
            std::fabs(shortestAngleDelta(gWristRoll, p.wristRoll)) < 0.65f;
 }
-
-// ===========================================================================
-//  ROBOT MOTION
-//
-//  Three things were wrong with the previous scheme, and they compounded:
-//
-//  1. ANGLES WERE INTERPOLATED RAW.  Moving the base from 170 deg to -170 deg
-//     is a 20 degree step, but subtracting the two gives -340, so the arm span
-//     the long way round.  Every rotation now takes the SHORTEST signed path.
-//
-//  2. EACH JOINT RAN AT ITS OWN FIXED RATE, so whichever joint had the least
-//     to do finished first and the rest carried on alone.  The arm appeared to
-//     move in stages - straighten, then swing, then tilt - instead of flowing.
-//     All five joints now share one timeline and arrive together.
-//
-//  3. MOTION STARTED AND STOPPED ABRUPTLY, at full speed from rest.  The
-//     timeline is now eased with a smoothstep, so the arm accelerates out of
-//     one pose and settles into the next.
-// ===========================================================================
 
 // Shortest signed angular difference, wrapped into [-180, +180].
 static float shortestAngleDelta(float from, float to)
@@ -643,13 +461,9 @@ static bool sameTarget(const RobotPose& a, const RobotPose& b)
            std::fabs(a.wristRoll - b.wristRoll) < 1e-4f;
 }
 
-// Manual keyboard control writes the joints directly, so any automatic move in
-// flight has to be abandoned or it would fight the operator.
+
 static void cancelRobotMove() { gMove.active = false; }
 
-// The slew rate the duration is derived from.  speedScale then sets the
-// character of each move: fast for open travel, slow for a final tool
-// connection or a scanning pass.
 static const float kRobotSlewRate = 52.0f;   // degrees per second at scale 1.0
 
 static bool moveRobotTowardPose(const RobotPose& p, float dt, float speedScale = 1.0f)
@@ -664,9 +478,6 @@ static bool moveRobotTowardPose(const RobotPose& p, float dt, float speedScale =
         gMove.to = p;
         gMove.elapsed = 0.0f;
 
-        // One timeline for the whole arm, long enough for whichever joint has
-        // the furthest to travel.  That is what makes the links fold and the
-        // wrist turn together rather than one after another.
         float widest = 0.0f;
         widest = std::fmax(widest, std::fabs(shortestAngleDelta(gMove.from.yaw, p.yaw)));
         widest = std::fmax(widest, std::fabs(shortestAngleDelta(gMove.from.joint1, p.joint1)));
@@ -705,13 +516,6 @@ static bool moveRobotTowardPose(const RobotPose& p, float dt, float speedScale =
     return false;
 }
 
-// ---------------------------------------------------------------------------
-//  PATH FOLLOWING
-//
-//  A wipe is a list of waypoints, not a single target.  gServiceWaypoint is
-//  the cursor into that list; it is reset whenever the phase or the state
-//  changes, so a path always starts from its beginning.
-// ---------------------------------------------------------------------------
 static int gServiceWaypoint = 0;
 
 static bool moveRobotAlongPath(const RobotPose* path, int count, float dt,
@@ -732,11 +536,6 @@ static float pathProgress(int count)
     return (p > 1.0f) ? 1.0f : p;
 }
 
-// ---------------------------------------------------------------------------
-//  INTO AND OUT OF POSE_PLATFORM_UP - see the pose's own comment for why it
-//  is three separate moves.  Each stage is an ordinary moveRobotTowardPose;
-//  gServiceWaypoint counts the stages, so nothing else in the phase may use it.
-// ---------------------------------------------------------------------------
 static RobotPose gPlatformFrom;      // the pose the ascent started from
 
 static bool moveToPlatformSafe(float dt, float speedScale = 0.95f)
@@ -775,9 +574,6 @@ static bool armIsRaised()
            std::fabs(shortestAngleDelta(gWristPitch, POSE_PLATFORM_UP.wristPitch)) < 0.5f;
 }
 
-// The reverse: from POSE_PLATFORM_UP down onto a working pose.  `stage` is
-// owned by the caller (0, 1, 2) so the caller can run this after something
-// else in the same phase.
 static bool platformDescend(const RobotPose& to, int& stage, float dt, float speedScale = 0.90f)
 {
     if (stage == 0)
@@ -799,22 +595,6 @@ static bool platformDescend(const RobotPose& to, int& stage, float dt, float spe
     return moveRobotTowardPose(to, dt, speedScale);   // lean in to the panel
 }
 
-// ===========================================================================
-//  VISUAL TOOL EXCHANGE
-//
-//  The old sequence set gRobotTool to a new value and the head simply became a
-//  different object in mid-air.  This performs the whole exchange where the
-//  viewer can see it:
-//
-//      rack safe -> above the fitted tool's dock -> lower onto it -> pause
-//      -> RELEASE (the head stays on the dock) -> bare wrist lifts
-//      -> hold, so the bare coupler and BOTH tools are visible together
-//      -> across to the next dock -> lower -> pause -> LATCH -> lift away
-//
-//  Nothing is swapped instantaneously, and the dwell at step 5 is the proof:
-//  for half a second there is a bare connector on the robot and two tools on
-//  the table.
-// ===========================================================================
 static int gToolChangeFrom = 0;
 
 static void nextServicePhase();   // defined just below
@@ -825,9 +605,6 @@ static bool runToolChange(int nextTool, float dt)
     {
     case 0:     // clear of the vehicle, over the rack
         gToolChangeFrom = (gRobotTool >= 0) ? gRobotTool : nextTool;
-        // Coming straight from the raised platform pose, the move to the rack
-        // is a 135-degree swing combined with a drop, which cuts through the
-        // ceiling fixtures on the way.  Swing round high first, then lower.
         if (gServiceWaypoint == 0 && armIsRaised())
         {
             const RobotPose overRack = { POSE_RACK_SAFE.yaw, POSE_PLATFORM_UP.joint1,
@@ -916,6 +693,12 @@ static void resetServiceDemo()
     gWristRoll = POSE_HOME.wristRoll;
     gRobotTool = 0;
 
+    // Keep the diagnostic monitor aligned with the side the robot actually services.
+    gRtPreset = 3;
+    gRtYaw = 0.0f;
+    gRtLightIdx = 2;
+    gRtLightCustom = false;
+
     std::cout << "Automatic service reset. Press ENTER to start.\n";
 }
 
@@ -979,9 +762,6 @@ static void updateServiceAutomation(float dt)
     switch (gServiceState)
     {
     case SERVICE_DOOR_OPEN_IN:
-        // The vehicle is waiting on the apron.  Open the door, and hold for a
-        // moment once it is clear, so the arrival reads as "the door opened,
-        // THEN it moved" rather than as one continuous slide.
         gDoorOpen = true;
         gDoorTarget = 4.9f;
         gCarDriveTarget = 1.0f;
@@ -990,9 +770,6 @@ static void updateServiceAutomation(float dt)
         break;
 
     case SERVICE_DRIVE_IN:
-        // One parameter drives the whole arrival: carDrive runs 1 -> 0, and
-        // the scene derives the vehicle's position, its height on the ramp,
-        // its nose-up attitude and its wheel rotation from that single number.
         gCarDriveTarget = 0.0f;
         if (gSwitches.carDrive <= 0.002f && gServiceTimer > 0.60f)
             setServiceState(SERVICE_DOOR_CLOSE);
@@ -1016,12 +793,6 @@ static void updateServiceAutomation(float dt)
     case SERVICE_SCAN:
     {
         gRobotTool = 0;
-        // Every region is entered and left through a staging pose, so the arm
-        // never interpolates straight from one side of the car to the other.
-        //
-        // The arm cannot aim at the FAR flank from where it is bolted, so the
-        // turntable brings that side round to it.  Both flank passes therefore
-        // reuse exactly the same poses - the vehicle moves, not the robot.
         switch (gServicePhase)
         {
         case 0:  if (moveRobotTowardPose(POSE_SCAN_TOP_SAFE, dt, 1.20f)) nextServicePhase(); break;
@@ -1103,8 +874,7 @@ static void updateServiceAutomation(float dt)
     }
 
     case SERVICE_GET_SPONGE:
-        // Swap the scanner for the gripper, in full view, then pick the sponge
-        // straight up off the table.
+        
         if (gServicePhase <= 9) { runToolChange(2, dt); break; }
         if (gServicePhase == 10)
         {
@@ -1139,9 +909,6 @@ static void updateServiceAutomation(float dt)
     case SERVICE_CLEAN:
         if (gServicePhase == 0)
         {
-            // Straight from the rack to the panel through one safe retract.
-            // This used to swing out to yaw 180, back to 0, and only then
-            // approach - two full base rotations that achieved nothing.
             if (moveRobotTowardPose(POSE_SIDE_RETRACT, dt, 1.20f)) nextServicePhase();
         }
         else if (gServicePhase == 1)
@@ -1155,17 +922,12 @@ static void updateServiceAutomation(float dt)
         }
         else if (gServicePhase == 3)
         {
-            // The dirt now retreats in step with the sponge's position along
-            // the panel, so the clean band follows the tool instead of fading
-            // on a timer that had nothing to do with where the sponge was.
             const bool done = moveRobotAlongPath(PATH_CLEAN_HIGH, 4, dt, 0.38f);
             gServiceVisual.dirtAmount = 1.0f - 0.35f * pathProgress(4);
             if (done) { gServiceVisual.dirtAmount = 0.65f; nextServicePhase(); }
         }
         else if (gServicePhase == 4)
         {
-            // Lift off the paint before traversing back to the start of the
-            // next band, instead of dragging the sponge across it.
             if (gServiceWaypoint == 0)
             {
                 if (moveRobotTowardPose(POSE_SIDE_RETRACT, dt, 0.85f)) ++gServiceWaypoint;
@@ -1203,8 +965,7 @@ static void updateServiceAutomation(float dt)
         break;
 
     case SERVICE_RETURN_SPONGE:
-        // Set the sponge back down on the table.  No trip home in between -
-        // the arm goes straight from the panel to the rack.
+      
         if (gServicePhase == 0)
         {
             if (moveRobotTowardPose(POSE_SPONGE_HOVER, dt, 1.10f)) nextServicePhase();
@@ -1240,10 +1001,6 @@ static void updateServiceAutomation(float dt)
         break;
 
     case SERVICE_POLISH:
-        // Polishing follows the same logic as the inspection: the near flank
-        // is worked, the turntable brings the far flank round, and the same
-        // three bands are run again.  The finish therefore ends up uniform
-        // over the whole shell rather than on one bright door.
         if (gServicePhase == 0)
         {
             if (gServiceWaypoint == 0)
@@ -1455,6 +1212,13 @@ static void updateServiceAutomation(float dt)
         gDoorTarget = 4.9f;
         gServiceVisual.warningPulse = 0.28f + 0.52f * (0.5f + 0.5f * std::sin(gServiceTimer * 8.0f));
         if (gDoorOffset >= 4.865f && gServiceTimer > 0.45f)
+            setServiceState(SERVICE_DRIVE_OUT);
+        break;
+
+    case SERVICE_DRIVE_OUT:
+        gServiceVisual.completeGlow = 1.0f;
+        gCarDriveTarget = 1.0f;
+        if (gSwitches.carDrive >= 0.998f && gServiceTimer > 0.60f)
             setServiceState(SERVICE_COMPLETE);
         break;
 
@@ -1462,7 +1226,6 @@ static void updateServiceAutomation(float dt)
         break;
     }
 }
-
 
 struct SafetyAABB
 {
@@ -1537,14 +1300,6 @@ static Vec3 yawRobotPoint(float localX, float y, float localZ, float yawDeg)
         baseZ - sn * localX + c * localZ);
 }
 
-// ---------------------------------------------------------------------------
-//  HOW FAR THE FITTED TOOL ACTUALLY REACHES
-//
-//  Measured to each tool's own deepest point, from the wrist.  The collision
-//  test used to assume a single nominal 0.95 m stub for all of them, which is
-//  how the impact driver - 1.15 m long - was able to pass straight through the
-//  wheel without the safety system noticing.
-// ---------------------------------------------------------------------------
 static float currentToolReach()
 {
     switch (gRobotTool)
@@ -1596,11 +1351,6 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
         if (pts[i].z < -12.20f || pts[i].z > 12.20f) return false;
     }
 
-    // ---- self-collision ---------------------------------------------------
-    //  The tool hangs along the wrist frame's -Y, which is exactly the
-    //  direction the forearm runs back toward the elbow; so a wrist pitch near
-    //  0 (mod 360) folds the tool head straight into its own forearm.  Keep at
-    //  least 50 degrees between them - every scripted pose uses 60 or more.
     {
         const float fold = std::fabs(shortestAngleDelta(0.0f, wristPitch));
         if (fold < 50.0f) return false;
@@ -1610,22 +1360,10 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
 
     const SafetyAABB pedestal = { Vec3(-5.47f, 0.0f, -3.07f), Vec3(-3.73f, 0.82f, -1.33f) };
 
-    // The table SOLID only, up to its top surface.  It used to be a 2.1 m tall
-    // box enclosing the whole station, which meant the arm was forbidden from
-    // entering the very volume it has to reach into to change a tool.  Now it
-    // can descend onto the docks but still cannot pass through the tabletop.
     const SafetyAABB toolStation = { Vec3(-9.15f, 0.0f, -2.85f), Vec3(-6.65f, 0.86f, -0.85f) };
 
     float carY = Scene::liftTopY(liftHeight);
     const SafetyAABB centralLift = { Vec3(-1.62f, 0.0f, -4.72f), Vec3(1.62f, carY + 0.02f, 0.72f) };
-    // Safety volume around the serviced vehicle.  The shell is 2.06 m wide,
-    // 1.79 m tall and runs from -2.875 m to +2.905 m about its own origin, and
-    // the tyres stand ~62 mm wider than the body.  The box is deliberately a
-    // little larger than all of that - a safety volume is only useful if it
-    // errs outwards.
-    // The vehicle turns on the lift, so its footprint turns with it.  This is
-    // the exact axis-aligned bound of the rotated box rather than a fixed one,
-    // which would be wrong by nearly two metres at 90 degrees.
     const float cy = std::fabs(std::cos(radians(gServiceVisual.carYaw)));
     const float sy = std::fabs(std::sin(radians(gServiceVisual.carYaw)));
     const float truckHalfX = cy * 1.34f + sy * 2.95f;
@@ -1634,11 +1372,6 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
     const SafetyAABB centralTruck = { Vec3(-truckHalfX, carY - 0.02f, truckMidZ - truckHalfZ),
                                       Vec3( truckHalfX, carY + 1.92f, truckMidZ + truckHalfZ) };
 
-    // The SOLID itself - the stainless shell plus the tyres.  Unlike the
-    // approach volume above, nothing may ever be inside this, not even a tool
-    // that has been cleared for service contact.  Without it, "service
-    // contact allowed" meant the vehicle was simply ignored, and the arm could
-    // be hand-driven straight through the bodywork.
     const SafetyAABB vehicleSolid = { Vec3(-1.03f, carY + 0.28f, -4.90f),
                                       Vec3( 1.03f, carY + 1.80f,  0.92f) };
     const SafetyAABB vehicleWheels = { Vec3(-1.24f, carY, -4.25f),
@@ -1698,9 +1431,6 @@ static bool robotPoseSafe(float baseYaw, float joint1, float joint2, float wrist
         }
         else
         {
-            // Service contact: the tool may come right up to the paint, but
-            // "up to" is the operative word.  The forearm still has to stay
-            // out of the approach volume, and NOTHING may enter the solid.
             if (segmentHitsAABB(e, w, centralTruck, 0.18f)) return false;
             if (segmentHitsAABB(w, t, vehicleSolid, 0.010f)) return false;
             if (segmentHitsAABB(w, t, vehicleWheels, 0.010f)) return false;
@@ -1718,7 +1448,6 @@ static bool liftPositionSafe(float candidateHeight)
         gWristPitch, gWristRoll, candidateHeight, false);
 }
 
-
 static void resetCamera()
 {
     gCamera.position = Vec3(4.60f, 2.90f, 10.20f);
@@ -1726,7 +1455,6 @@ static void resetCamera()
     gCamera.pitch = -8.0f;
     gCamera.fov = 60.0f;
 }
-
 
 static int teachingStageCount()
 {
@@ -1831,8 +1559,11 @@ static void printConstructionStage()
     std::cout << "\n[Teaching] " << teachingObjectName()
         << " | stage " << (gTeachStage + 1) << "/" << teachingStageCount()
         << " | " << teachingStageName() << "\n";
-    std::cout << "  Visible primitive draw calls: 1.." << teachingLimit()
-        << " ; amber = newly added group.\n";
+    if (teachingLimit() >= kAllRemaining)
+        std::cout << "  Visible primitive draw calls: all ; amber = newly added group.\n";
+    else
+        std::cout << "  Visible primitive draw calls: 1.." << teachingLimit()
+            << " ; amber = newly added group.\n";
     std::cout << "  Vertex rule: v_world = T * Ry * Rx * Rz * S * v_local.\n";
     std::cout << "  Indices never change; each transformed primitive reuses its original EBO.\n";
 }
@@ -1869,18 +1600,17 @@ static void setTeachingMode(TeachingObject obj)
     printConstructionStage();
 }
 
-
 static void framebufferSizeCallback(GLFWwindow* /*window*/, int width, int height)
 {
+    if (gDemoActive) return;      // the recording size is fixed; the window is only a preview
     gWidth = width;
     gHeight = height;
     glViewport(0, 0, width, height);
 }
 
-
 static void cursorPosCallback(GLFWwindow* /*window*/, double xpos, double ypos)
 {
-    if (!gMouseCaptured)
+    if (!gMouseCaptured || gInputLocked)
     {
         gFirstMouse = true;
         return;
@@ -1902,12 +1632,10 @@ static void cursorPosCallback(GLFWwindow* /*window*/, double xpos, double ypos)
     gCamera.addMouseDelta(dx, dy);
 }
 
-
 static void scrollCallback(GLFWwindow* /*window*/, double /*xoffset*/, double yoffset)
 {
-    gCamera.addZoom(static_cast<float>(yoffset));
+    if (!gInputLocked) gCamera.addZoom(static_cast<float>(yoffset));
 }
-
 
 static void printTeachingInfo()
 {
@@ -1939,20 +1667,6 @@ static void printTeachingInfo()
     std::cout << "------------------------------------------------------------\n" << std::endl;
 }
 
-
-// ===========================================================================
-//  FRAME CAPTURE
-//
-//  Reads the finished frame back out of the default framebuffer and writes it
-//  as an uncompressed 24-bit BMP.  BMP is used deliberately: it needs no
-//  third-party encoder, so the project keeps its "builds from this folder with
-//  nothing installed" property.
-//
-//  Two ways in:
-//     F                      grab the current frame while running
-//     --capture <file.bmp>   render a few frames headlessly and exit, which is
-//                            how the submission stills in Reference/ are made
-// ===========================================================================
 static bool gReelActive = false;
 
 static bool saveScreenshotBMP(const char* path, int width, int height)
@@ -2019,23 +1733,6 @@ static void captureCurrentFrame()
     saveScreenshotBMP(name, gWidth, gHeight);
 }
 
-// ===========================================================================
-//  DEMO REEL
-//
-//  A scripted two-minute run used to record the submission video.  Three
-//  things make it a recording rather than a live capture:
-//
-//    1. FIXED TIMESTEP.  The simulation advances by exactly 1/24 s per frame
-//       regardless of how long that frame took to render, so the playback
-//       speed of the finished file does not depend on the machine.
-//    2. V-SYNC OFF.  Frames are produced as fast as they can be, so a
-//       two-minute video records in well under two minutes.
-//    3. EVERY FRAME IS WRITTEN.  No frames are dropped, so the motion is
-//       smooth even where the renderer is slow.
-//
-//  The camera follows a keyframe track and the feature toggles fire from an
-//  event table, so the same reel comes out identical every time.
-// ===========================================================================
 static std::string gReelDir;
 static int   gReelFrame = 0;
 static int   gReelStart = 0;             // first frame to actually write
@@ -2046,20 +1743,6 @@ static float gServiceSpeed = 1.0f;       // the service runs faster while record
 
 struct ReelKey { float t; Vec3 eye; Vec3 look; float fov; };
 
-// Camera track.
-//
-//  LAYOUT THE SHOTS HAVE TO RESPECT.  The robot is bolted at x = -4.6 and its
-//  tool rack at x = -7.9, so the whole left-hand half of the bay is occupied
-//  by the machine doing the work.  Shooting the service from that side puts an
-//  arm link straight across the lens.  Every interior shot is therefore taken
-//  from the OPEN right-hand side, where the arm reads in full against clear
-//  floor.  The parked cars sit at x = +10.6 and the columns at x = +-13.3, so
-//  the camera stays inside x < 9 indoors.
-//
-//  The reel now opens OUTSIDE, because the vehicle does: it waits on the
-//  apron, the door opens for it and it drives in and up the ramp.  While that
-//  is happening the camera tracks the vehicle rather than following keyframes
-//  (see reelApplyCamera), so it stays framed wherever it has got to.
 static const ReelKey kReelKeys[] = {
     // ---- 0-6 s: outside, the vehicle waiting on the apron ---------------
     {   0.0f, Vec3(  9.0f, 2.8f, 24.5f), Vec3( 0.0f, 1.1f, 16.3f), 50.0f },
@@ -2067,13 +1750,6 @@ static const ReelKey kReelKeys[] = {
     // 0-30 s is the tracked arrival; these only bracket it.
     {   6.0f, Vec3(  7.4f, 1.9f, 21.0f), Vec3( 0.0f, 0.95f, 16.1f), 46.0f },
     {  30.0f, Vec3(  7.5f, 3.2f,  3.0f), Vec3( 0.0f, 2.0f, -2.0f), 48.0f },
-    // ---- 30-44 s: the lift raises; projection toggle ---------------------
-    // The orthographic box is as tall as the perspective frustum is at the
-    // subject - about 11 m here - so a level camera puts its lower half below
-    // the slab, and the bottom third of the frame is simply the void under the
-    // floor.  Raising the rig and pitching it down keeps the whole box on the
-    // building, and an elevated view down the bay is also the clearest place
-    // to watch the runways stop converging.
     {  34.0f, Vec3(  1.2f, 5.40f, 8.5f), Vec3( 0.0f, 0.9f, -4.0f), 42.0f },
     {  40.0f, Vec3(  5.0f, 3.20f, 7.0f), Vec3( 0.0f, 1.8f, -2.0f), 46.0f },
     // ---- 44-56 s: shading, then textures ---------------------------------
@@ -2097,11 +1773,6 @@ static const ReelKey kReelKeys[] = {
     { 120.0f, Vec3( 11.5f, 3.6f, 10.5f), Vec3( 0.0f, 2.0f,  0.0f), 56.0f },
 };
 
-// While the vehicle is arriving it is the only thing worth looking at, and it
-// covers 18.5 m to get where it is going.  Fixed keyframes cannot hold a shot
-// on something moving that far, so for this window the camera is slaved to the
-// vehicle's own position: it rides alongside and a little ahead, which keeps
-// the ramp climb in frame without the operator having to guess the timing.
 static bool reelTrackArrival(float t)
 {
     if (t > 30.0f) return false;
@@ -2117,19 +1788,6 @@ static bool reelTrackArrival(float t)
     const float blend = (u * u * (3.0f - 2.0f * u)) * (v * v * (3.0f - 2.0f * v));
     if (blend <= 0.001f) return false;
 
-    // Abeam and a little ahead.  A ramp climb is a change of ATTITUDE, and
-    // attitude only reads in profile - from behind, a vehicle tilting nose-up
-    // just gets shorter.
-    //
-    //  THE RIG HAS TO THREAD THE DOORWAY.  The vehicle starts on the apron and
-    //  ends 18.5 m away inside the building, so the camera has to come in with
-    //  it - and the only legal way through the front wall is the 13 m opening.
-    //  A rig riding abeam at x = 7.4 crosses that wall 0.9 m outside the post
-    //  and the shot fills with concrete.
-    //
-    //  So the camera's x is narrowed as it approaches the threshold: 2.6 m off
-    //  the centreline at the door plane, opening back out to 7.4 m once it is
-    //  five metres clear on either side.  The z simply trails the vehicle.
     const float kThresholdZ = 13.40f;
     const float eyeZ = clampf(carZ + 4.50f, -1.0f, 24.0f);
     float openness = std::fabs(eyeZ - kThresholdZ) / 5.0f;
@@ -2191,9 +1849,6 @@ static void reelFireEvents(float prev, float now)
 {
     auto at = [&](float mark) { return prev < mark && now >= mark; };
 
-    // The demonstration itself starts almost immediately: the vehicle is
-    // outside, and bringing it in IS the opening shot.  The feature toggles
-    // then fire during the service, between the robot's moves.
     if (at( 6.0f)) { startServiceDemo(); gServiceSpeed = 1.55f; }
 
     if (at(34.0f)) gOrthographic = true;                       // projection
@@ -2209,17 +1864,6 @@ static void reelFireEvents(float prev, float now)
     if (at(72.0f)) gReflectionsEnabled = true;
 }
 
-// ===========================================================================
-//  SHOWCASE CAMERA
-//
-//  A fixed-radius orbit around the vehicle on the lift.  It exists for one
-//  reason: during a presentation nobody should have to fly a free camera with
-//  one hand while talking.  Press F12 and the model turns itself, holding a
-//  constant framing so every facet, fold and reflection sweeps past the eye.
-//
-//  It writes straight into the free camera, so releasing showcase mode simply
-//  hands control back from wherever the orbit happened to be - no snap.
-// ===========================================================================
 static void updateShowcaseCamera(float dt, const Vec3& subject)
 {
     if (gReelActive) return;      // the reel's keyframe track owns the camera
@@ -2242,13 +1886,6 @@ static void updateShowcaseCamera(float dt, const Vec3& subject)
     gCamera.pitch = std::atan2(toSubject.y, (flat > 0.0001f) ? flat : 0.0001f) * 180.0f / PI_F;
 }
 
-// ===========================================================================
-//  RENDER REPORT
-//
-//  Prints the state of every rendering feature at once.  Useful in a viva:
-//  one key shows which techniques are live, what they cost, and how the
-//  surface-finish system is currently configured.
-// ===========================================================================
 static void printRenderReport()
 {
     std::cout << "\n------------------------------------------------------------\n";
@@ -2259,8 +1896,7 @@ static void printRenderReport()
               << ((gFrameMsAvg > 0.0001f) ? (1000.0f / gFrameMsAvg) : 0.0f) << " fps)\n";
     std::cout << " Primitive draws   : " << Primitives::drawCallsThisFrame() << " last frame\n";
     std::cout << "\n Shading model     : "
-              << (gShadingMode == 0 ? "Cook-Torrance GGX, per fragment"
-                                    : "Gouraud, per vertex") << "\n";
+              << kShadingNames[gShadingMode] << "\n";
     std::cout << " Specular model    : anisotropic GGX + clear-coat lobe\n";
     std::cout << " Environment       : 128px HDR cubemap probe, split-sum IBL, "
               << "intensity " << gIblIntensity << "\n";
@@ -2331,8 +1967,8 @@ static void handleDiscreteKey(GLFWwindow* window, int key)
     case GLFW_KEY_F3: if (!serviceRunning()) { gRobotTool = 2; std::cout << "Robot tool: gripper\n"; } break;
     case GLFW_KEY_F4: if (!serviceRunning()) { gRobotTool = 3; std::cout << "Robot tool: polisher\n"; } break;
     case GLFW_KEY_F5:
-        gShadingMode = 1 - gShadingMode;
-        std::cout << "Shading: " << (gShadingMode == 0 ? "Cook-Torrance PBR (per-fragment)" : "Gouraud (per-vertex)") << "\n";
+        gShadingMode = (gShadingMode + 1) % 3;     // PBR -> Gouraud -> Phong -> PBR
+        std::cout << "Shading: " << kShadingNames[gShadingMode] << "\n";
         break;
     case GLFW_KEY_F6:
         gTexturesEnabled = !gTexturesEnabled;
@@ -2403,19 +2039,7 @@ static void handleDiscreteKey(GLFWwindow* window, int key)
         gSwitches.hazardBeacon = !gSwitches.hazardBeacon;
         std::cout << "Hazard beacon: " << (gSwitches.hazardBeacon ? "FLASHING" : "OFF") << "\n";
         break;
-    case GLFW_KEY_9:
-        gSwitches.fanSpeed = clampf(gSwitches.fanSpeed - 0.35f, 0.0f, 2.0f);
-        std::cout << "Ceiling fan speed: " << gSwitches.fanSpeed << "\n";
-        break;
-    case GLFW_KEY_0:
-        gSwitches.fanSpeed = clampf(gSwitches.fanSpeed + 0.35f, 0.0f, 2.0f);
-        std::cout << "Ceiling fan speed: " << gSwitches.fanSpeed << "\n";
-        break;
-
     case GLFW_KEY_HOME:
-        // Drive the serviced vehicle out of the bay and back in again.  The
-        // lift has to be down and the door open for this to be legal, so the
-        // command arranges both rather than refusing.
         if (!serviceRunning())
         {
             gCarDriveTarget = (gCarDriveTarget > 0.5f) ? 0.0f : 1.0f;
@@ -2427,6 +2051,29 @@ static void handleDiscreteKey(GLFWwindow* window, int key)
             std::cout << "Vehicle " << (gCarDriveTarget > 0.5f ? "driving OUT of the bay"
                                                               : "returning to the service bay") << "\n";
         }
+        break;
+    case GLFW_KEY_9:
+        gRtLarge = !gRtLarge;
+        rtApplySize();
+        std::cout << "Inspection view: " << (gRtLarge ? "ENLARGED (press 9 to close)" : "monitor only") << "\n";
+        break;
+    case GLFW_KEY_MINUS:
+        gRtShadows = !gRtShadows;
+        std::cout << "Inspection-light shadow rays: " << (gRtShadows ? "ON" : "OFF") << "\n";
+        break;
+    case GLFW_KEY_EQUAL:
+        gRtPreset = (gRtPreset + 1) % 4;
+        gRtYaw = 0.0f;
+        std::cout << "Inspection camera preset " << gRtPreset << "\n";
+        break;
+    case GLFW_KEY_PAGE_DOWN:
+        gRtLightCustom = false;
+        gRtLightIdx = (gRtLightIdx + 1) % 5;
+        std::cout << "Inspection light preset " << gRtLightIdx << "\n";
+        break;
+    case GLFW_KEY_0:
+        gNight = !gNight;
+        std::cout << "Exterior environment: " << (gNight ? "NIGHT" : "DAYLIGHT") << "\n";
         break;
     case GLFW_KEY_M:
         gLightingPreset = static_cast<LightingPreset>((gLightingPreset + 1) % LIGHT_PRESET_COUNT);
@@ -2508,7 +2155,6 @@ static void handleDiscreteKey(GLFWwindow* window, int key)
     }
 }
 
-
 static bool keyPressedOnce(GLFWwindow* window, int key, bool& wasDown)
 {
     const bool down = (glfwGetKey(window, key) == GLFW_PRESS);
@@ -2521,11 +2167,11 @@ static void processDiscreteInput(GLFWwindow* window)
 {
     static bool esc=false, l=false, v=false, o=false, p=false, c=false, stopLift=false, f1=false, f2=false, f3=false, f4=false, f5=false, f6=false, f7=false, f8=false, f9=false, f10=false;
     static bool k1=false, k2=false, k3=false, k4=false, k5=false, k6=false, k7=false, k8=false;
-    static bool kp1=false, kp2=false, kp3=false, kp4=false, kp5=false, kp6=false, kp7=false, kp8=false;
     static bool n=false, b=false, r=false, enter=false, kpEnter=false, tab=false;
     static bool f11=false, f12=false, m=false, comma=false, period=false, fkey=false;
-    static bool semi=false, apos=false, slash=false, endk=false, k9=false, k0=false, home=false;
-    static bool bksp=false, pgup=false;
+    static bool semi=false, apos=false, slash=false, endk=false, home=false;
+    static bool bksp=false, pgup=false, pgdn=false;
+    static bool rt9=false, rtMinus=false, rtEqual=false, zero=false, kpZero=false;
 
     if (keyPressedOnce(window, GLFW_KEY_ESCAPE, esc)) handleDiscreteKey(window, GLFW_KEY_ESCAPE);
     if (keyPressedOnce(window, GLFW_KEY_L, l))       handleDiscreteKey(window, GLFW_KEY_L);
@@ -2552,22 +2198,27 @@ static void processDiscreteInput(GLFWwindow* window)
     if (keyPressedOnce(window, GLFW_KEY_APOSTROPHE, apos)) handleDiscreteKey(window, GLFW_KEY_APOSTROPHE);
     if (keyPressedOnce(window, GLFW_KEY_SLASH, slash))     handleDiscreteKey(window, GLFW_KEY_SLASH);
     if (keyPressedOnce(window, GLFW_KEY_END, endk))        handleDiscreteKey(window, GLFW_KEY_END);
-    if (keyPressedOnce(window, GLFW_KEY_9, k9))            handleDiscreteKey(window, GLFW_KEY_9);
-    if (keyPressedOnce(window, GLFW_KEY_0, k0))            handleDiscreteKey(window, GLFW_KEY_0);
     if (keyPressedOnce(window, GLFW_KEY_HOME, home))       handleDiscreteKey(window, GLFW_KEY_HOME);
     if (keyPressedOnce(window, GLFW_KEY_BACKSPACE, bksp))  handleDiscreteKey(window, GLFW_KEY_BACKSPACE);
     if (keyPressedOnce(window, GLFW_KEY_PAGE_UP, pgup))    handleDiscreteKey(window, GLFW_KEY_PAGE_UP);
     if (keyPressedOnce(window, GLFW_KEY_COMMA, comma))   handleDiscreteKey(window, GLFW_KEY_COMMA);
     if (keyPressedOnce(window, GLFW_KEY_PERIOD, period)) handleDiscreteKey(window, GLFW_KEY_PERIOD);
 
-    if (keyPressedOnce(window, GLFW_KEY_1, k1) || keyPressedOnce(window, GLFW_KEY_KP_1, kp1)) handleDiscreteKey(window, GLFW_KEY_1);
-    if (keyPressedOnce(window, GLFW_KEY_2, k2) || keyPressedOnce(window, GLFW_KEY_KP_2, kp2)) handleDiscreteKey(window, GLFW_KEY_2);
-    if (keyPressedOnce(window, GLFW_KEY_3, k3) || keyPressedOnce(window, GLFW_KEY_KP_3, kp3)) handleDiscreteKey(window, GLFW_KEY_3);
-    if (keyPressedOnce(window, GLFW_KEY_4, k4) || keyPressedOnce(window, GLFW_KEY_KP_4, kp4)) handleDiscreteKey(window, GLFW_KEY_4);
-    if (keyPressedOnce(window, GLFW_KEY_5, k5) || keyPressedOnce(window, GLFW_KEY_KP_5, kp5)) handleDiscreteKey(window, GLFW_KEY_5);
-    if (keyPressedOnce(window, GLFW_KEY_6, k6) || keyPressedOnce(window, GLFW_KEY_KP_6, kp6)) handleDiscreteKey(window, GLFW_KEY_6);
-    if (keyPressedOnce(window, GLFW_KEY_7, k7) || keyPressedOnce(window, GLFW_KEY_KP_7, kp7)) handleDiscreteKey(window, GLFW_KEY_7);
-    if (keyPressedOnce(window, GLFW_KEY_8, k8) || keyPressedOnce(window, GLFW_KEY_KP_8, kp8)) handleDiscreteKey(window, GLFW_KEY_8);
+    if (keyPressedOnce(window, GLFW_KEY_9, rt9))             handleDiscreteKey(window, GLFW_KEY_9);
+    if (keyPressedOnce(window, GLFW_KEY_MINUS, rtMinus))     handleDiscreteKey(window, GLFW_KEY_MINUS);
+    if (keyPressedOnce(window, GLFW_KEY_EQUAL, rtEqual))     handleDiscreteKey(window, GLFW_KEY_EQUAL);
+    if (keyPressedOnce(window, GLFW_KEY_PAGE_DOWN, pgdn))    handleDiscreteKey(window, GLFW_KEY_PAGE_DOWN);
+    if (keyPressedOnce(window, GLFW_KEY_0, zero) || keyPressedOnce(window, GLFW_KEY_KP_0, kpZero))
+        handleDiscreteKey(window, GLFW_KEY_0);
+
+    if (keyPressedOnce(window, GLFW_KEY_1, k1)) handleDiscreteKey(window, GLFW_KEY_1);
+    if (keyPressedOnce(window, GLFW_KEY_2, k2)) handleDiscreteKey(window, GLFW_KEY_2);
+    if (keyPressedOnce(window, GLFW_KEY_3, k3)) handleDiscreteKey(window, GLFW_KEY_3);
+    if (keyPressedOnce(window, GLFW_KEY_4, k4)) handleDiscreteKey(window, GLFW_KEY_4);
+    if (keyPressedOnce(window, GLFW_KEY_5, k5)) handleDiscreteKey(window, GLFW_KEY_5);
+    if (keyPressedOnce(window, GLFW_KEY_6, k6)) handleDiscreteKey(window, GLFW_KEY_6);
+    if (keyPressedOnce(window, GLFW_KEY_7, k7)) handleDiscreteKey(window, GLFW_KEY_7);
+    if (keyPressedOnce(window, GLFW_KEY_8, k8)) handleDiscreteKey(window, GLFW_KEY_8);
 
     if (keyPressedOnce(window, GLFW_KEY_N, n))       handleDiscreteKey(window, GLFW_KEY_N);
     if (keyPressedOnce(window, GLFW_KEY_B, b))       handleDiscreteKey(window, GLFW_KEY_B);
@@ -2601,7 +2252,7 @@ static void updateTeachingWindowTitle(GLFWwindow* window)
         title += " | ENTER start";
     }
     title += " | ";
-    title += (gShadingMode == 0 ? "PHONG" : "GOURAUD");
+    title += (gShadingMode == 0 ? "PBR" : (gShadingMode == 1 ? "GOURAUD" : "PHONG"));
     title += gTexturesEnabled ? " | TEX" : " | noTEX";
     title += gShadowsEnabled ? " | SHADOW" : " | noSHADOW";
     title += gReflectionsEnabled ? " | REFL" : " | noREFL";
@@ -2613,44 +2264,63 @@ static void processMovement(GLFWwindow* window, float dt)
 {
     gSafetyStop = false;
 
-    // While the showcase orbit is driving the camera, WASD would fight it.
     if (gShowcase) return;
 
-    float speedScale = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) ? 2.5f : 1.0f;
+    float speedScale = (keyDown(window, GLFW_KEY_LEFT_SHIFT)) ? 2.5f : 1.0f;
     float step = dt * speedScale;
 
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) gCamera.moveForward(step);
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) gCamera.moveBackward(step);
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) gCamera.moveLeft(step);
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) gCamera.moveRight(step);
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) gCamera.moveUp(step);
-    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) gCamera.moveDown(step);
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) gCamera.moveDown(step);
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) gCamera.moveUp(step);
+    if (keyDown(window, GLFW_KEY_W)) gCamera.moveForward(step);
+    if (keyDown(window, GLFW_KEY_S)) gCamera.moveBackward(step);
+    if (keyDown(window, GLFW_KEY_A)) gCamera.moveLeft(step);
+    if (keyDown(window, GLFW_KEY_D)) gCamera.moveRight(step);
+    if (keyDown(window, GLFW_KEY_SPACE)) gCamera.moveUp(step);
+    if (keyDown(window, GLFW_KEY_LEFT_CONTROL)) gCamera.moveDown(step);
+    if (keyDown(window, GLFW_KEY_Q)) gCamera.moveDown(step);
+    if (keyDown(window, GLFW_KEY_E)) gCamera.moveUp(step);
+
+
+    {
+        const float yawStep = 50.0f * dt, lightStep = 2.2f * dt;
+        if (keyDown(window, GLFW_KEY_INSERT)) gRtYaw -= yawStep;
+        if (keyDown(window, GLFW_KEY_DELETE)) gRtYaw += yawStep;
+        Vec3 dl(0.0f, 0.0f, 0.0f);
+        if (keyDown(window, GLFW_KEY_KP_4)) dl.x -= lightStep;
+        if (keyDown(window, GLFW_KEY_KP_6)) dl.x += lightStep;
+        if (keyDown(window, GLFW_KEY_KP_8)) dl.z -= lightStep;
+        if (keyDown(window, GLFW_KEY_KP_2)) dl.z += lightStep;
+        if (keyDown(window, GLFW_KEY_KP_ADD)) dl.y += lightStep;
+        if (keyDown(window, GLFW_KEY_KP_SUBTRACT)) dl.y -= lightStep;
+        if (dl.x != 0.0f || dl.y != 0.0f || dl.z != 0.0f)
+        {
+            if (!gRtLightCustom) { gRtLight = Vec3(-2.6f, 0.60f, -6.0f); gRtLightCustom = true; }
+            gRtLight = Vec3(clampf(gRtLight.x + dl.x, -6.0f, 6.0f), clampf(gRtLight.y + dl.y, 0.15f, 5.0f),
+                            clampf(gRtLight.z + dl.z, -9.0f, 7.0f));
+        }
+    }
 
     // Camera remains free during the automatic service, but the moving
     // mechanisms are owned by the finite-state sequence until it finishes.
     if (serviceRunning()) return;
 
-    if (glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_Z))
     {
         gDoorOffset = clampf(gDoorOffset - kDoorSpeed * dt, 0.0f, 4.9f);
         gDoorTarget = gDoorOffset;
     }
-    if (glfwGetKey(window, GLFW_KEY_X) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_X))
     {
         gDoorOffset = clampf(gDoorOffset + kDoorSpeed * dt, 0.0f, 4.9f);
         gDoorTarget = gDoorOffset;
     }
 
-    if (glfwGetKey(window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_LEFT_BRACKET))
     {
         float candidate = clampf(gLiftHeight - kLiftSpeed * dt, 0.0f, 3.80f);
         if (liftPositionSafe(candidate)) gLiftHeight = candidate;
         else gSafetyStop = true;
         gLiftTarget = gLiftHeight;
     }
-    if (glfwGetKey(window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_RIGHT_BRACKET))
     {
         float candidate = clampf(gLiftHeight + kLiftSpeed * dt, 0.0f, 3.80f);
         if (liftPositionSafe(candidate)) gLiftHeight = candidate;
@@ -2681,29 +2351,263 @@ static void processMovement(GLFWwindow* window, float dt)
         }
     };
 
-    if (glfwGetKey(window, GLFW_KEY_T) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_T))
         tryPose(gRobotBaseYaw + baseStep, gJoint1Angle, gJoint2Angle, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_G) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_G))
         tryPose(gRobotBaseYaw - baseStep, gJoint1Angle, gJoint2Angle, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_U) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_U))
         tryPose(gRobotBaseYaw, gJoint1Angle + armStep, gJoint2Angle, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_J))
         tryPose(gRobotBaseYaw, gJoint1Angle - armStep, gJoint2Angle, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_I) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_I))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle + armStep, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_K))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle - armStep, gWristPitch, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_Y) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_Y))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle, gWristPitch + wristStep, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_H) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_H))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle, gWristPitch - wristStep, gWristRoll);
-    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_RIGHT))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle, gWristPitch, gWristRoll + wristStep);
-    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
+    if (keyDown(window, GLFW_KEY_LEFT))
         tryPose(gRobotBaseYaw, gJoint1Angle, gJoint2Angle, gWristPitch, gWristRoll - wristStep);
 
 }
 
+struct DemoKey   { float t; Vec3 eye; Vec3 look; float fov; char ease; bool eyeRel, lookRel; };
+struct DemoEvent { float t; int key; };
+struct DemoHold  { float t0, t1; int key; };
+struct DemoRamp  { float t, v, dur, from; int what; bool started; };   // what 0 speed, 1 exposure
+
+static std::string gDemoScript, gDemoPipeFile;
+static float gDemoFps = 60.0f;
+static int   gDemoStart = 0, gDemoEnd = -1, gDemoFrame = 0;
+static float gDemoTime = 0.0f, gDemoLength = 0.0f;
+static std::vector<DemoKey>   gDemoKeys;
+static std::vector<DemoEvent> gDemoEvents;
+static std::vector<DemoHold>  gDemoHolds;
+static std::vector<DemoRamp>  gDemoRamps;
+static FILE*  gDemoPipe = nullptr;
+static GLuint gOutFbo = 0, gOutRbo = 0, gOutPbo[2] = { 0, 0 };
+static int    gPreviewW = 960, gPreviewH = 540;
+
+static int demoKeyCode(const std::string& n)
+{
+    static const struct { const char* name; int key; } kNames[] = {
+        {"ENTER", GLFW_KEY_ENTER}, {"BACKSPACE", GLFW_KEY_BACKSPACE}, {"MINUS", GLFW_KEY_MINUS},
+        {"EQUAL", GLFW_KEY_EQUAL}, {"PAGE_DOWN", GLFW_KEY_PAGE_DOWN}, {"PAGE_UP", GLFW_KEY_PAGE_UP},
+        {"SEMICOLON", GLFW_KEY_SEMICOLON}, {"APOSTROPHE", GLFW_KEY_APOSTROPHE}, {"SLASH", GLFW_KEY_SLASH},
+        {"END", GLFW_KEY_END}, {"HOME", GLFW_KEY_HOME}, {"INSERT", GLFW_KEY_INSERT}, {"DELETE", GLFW_KEY_DELETE},
+        {"LEFT", GLFW_KEY_LEFT}, {"RIGHT", GLFW_KEY_RIGHT}, {"LEFT_BRACKET", GLFW_KEY_LEFT_BRACKET},
+        {"RIGHT_BRACKET", GLFW_KEY_RIGHT_BRACKET}, {"BACKSLASH", GLFW_KEY_BACKSLASH}, {"COMMA", GLFW_KEY_COMMA},
+        {"PERIOD", GLFW_KEY_PERIOD}, {"KP_2", GLFW_KEY_KP_2}, {"KP_4", GLFW_KEY_KP_4}, {"KP_6", GLFW_KEY_KP_6},
+        {"KP_8", GLFW_KEY_KP_8}, {"KP_ADD", GLFW_KEY_KP_ADD}, {"KP_SUBTRACT", GLFW_KEY_KP_SUBTRACT},
+        {"F1", GLFW_KEY_F1}, {"F2", GLFW_KEY_F2}, {"F3", GLFW_KEY_F3}, {"F4", GLFW_KEY_F4}, {"F5", GLFW_KEY_F5},
+        {"F6", GLFW_KEY_F6}, {"F7", GLFW_KEY_F7}, {"F8", GLFW_KEY_F8}, {"F9", GLFW_KEY_F9}, {"F10", GLFW_KEY_F10},
+        {"F11", GLFW_KEY_F11}, {"F12", GLFW_KEY_F12} };
+    for (const auto& k : kNames) if (n == k.name) return k.key;
+    if (n.size() == 1 && n[0] >= 'A' && n[0] <= 'Z') return GLFW_KEY_A + (n[0] - 'A');
+    if (n.size() == 1 && n[0] >= '0' && n[0] <= '9') return GLFW_KEY_0 + (n[0] - '0');
+    std::cout << "[Demo] unknown key name " << n << "\n";
+    return -1;
+}
+
+static bool loadDemoScript(const std::string& path)
+{
+    FILE* f = nullptr;
+    if (fopen_s(&f, path.c_str(), "r") != 0 || !f) { std::cout << "[Demo] cannot open " << path << "\n"; return false; }
+    char line[1024];
+    while (fgets(line, sizeof(line), f))
+    {
+        char cmd[32] = { 0 };
+        if (sscanf_s(line, "%31s", cmd, static_cast<unsigned>(sizeof(cmd))) != 1 || cmd[0] == '#') continue;
+        const std::string c = cmd;
+        if (c == "cam" || c == "camc" || c == "camt")
+        {
+            DemoKey k{}; char e[8] = "s";
+            const int n = sscanf_s(line, "%*s %f %f %f %f %f %f %f %f %7s", &k.t, &k.eye.x, &k.eye.y, &k.eye.z,
+                                   &k.look.x, &k.look.y, &k.look.z, &k.fov, e, static_cast<unsigned>(sizeof(e)));
+            if (n < 8) continue;
+            k.ease = e[0]; k.eyeRel = (c == "camc"); k.lookRel = (c != "cam");
+            gDemoKeys.push_back(k);
+        }
+        else if (c == "key")
+        {
+            DemoEvent ev{}; char name[32] = { 0 };
+            if (sscanf_s(line, "%*s %f %31s", &ev.t, name, static_cast<unsigned>(sizeof(name))) == 2 &&
+                (ev.key = demoKeyCode(name)) >= 0) gDemoEvents.push_back(ev);
+        }
+        else if (c == "hold")
+        {
+            DemoHold h{}; char name[32] = { 0 };
+            if (sscanf_s(line, "%*s %f %f %31s", &h.t0, &h.t1, name, static_cast<unsigned>(sizeof(name))) == 3 &&
+                (h.key = demoKeyCode(name)) >= 0) gDemoHolds.push_back(h);
+        }
+        else if (c == "speed" || c == "exposure")
+        {
+            DemoRamp r{}; r.dur = 0.0f; r.what = (c == "speed") ? 0 : 1;
+            if (sscanf_s(line, "%*s %f %f %f", &r.t, &r.v, &r.dur) >= 2) gDemoRamps.push_back(r);
+        }
+        else if (c == "end") sscanf_s(line, "%*s %f", &gDemoLength);
+    }
+    fclose(f);
+    std::stable_sort(gDemoKeys.begin(), gDemoKeys.end(), [](const DemoKey& a, const DemoKey& b) { return a.t < b.t; });
+    std::stable_sort(gDemoEvents.begin(), gDemoEvents.end(), [](const DemoEvent& a, const DemoEvent& b) { return a.t < b.t; });
+    if (gDemoLength <= 0.0f && !gDemoKeys.empty()) gDemoLength = gDemoKeys.back().t;
+    std::printf("[Demo] %d camera keys, %d key presses, %d holds, %.2f s\n", static_cast<int>(gDemoKeys.size()),
+                static_cast<int>(gDemoEvents.size()), static_cast<int>(gDemoHolds.size()), gDemoLength);
+    return !gDemoKeys.empty();
+}
+
+// Fire every key press whose time falls in (prev, now], hold the held keys and
+// run the value ramps.
+static void demoFireEvents(GLFWwindow* window, float prev, float now)
+{
+    for (const DemoEvent& e : gDemoEvents)
+        if (e.t > prev && e.t <= now) handleDiscreteKey(window, e.key);
+    for (int k = 0; k <= GLFW_KEY_LAST; ++k) gDemoHeld[k] = false;
+    for (const DemoHold& h : gDemoHolds)
+        if (now >= h.t0 && now < h.t1) gDemoHeld[h.key] = true;
+    for (DemoRamp& r : gDemoRamps)
+    {
+        if (now < r.t) continue;
+        if (!r.started) { r.started = true; r.from = (r.what == 0) ? gServiceSpeed : gExposure; }
+        float u = (r.dur > 1e-4f) ? clampf((now - r.t) / r.dur, 0.0f, 1.0f) : 1.0f;
+        u = u * u * (3.0f - 2.0f * u);
+        const float v = r.from + (r.v - r.from) * u;
+        if (r.what == 0) gServiceSpeed = v; else gExposure = v;
+    }
+}
+
+static float demoEase(char e, float u)
+{
+    u = clampf(u, 0.0f, 1.0f);
+    switch (e)
+    {
+    case 'l': return u;
+    case 'i': return u * u;
+    case 'o': return 1.0f - (1.0f - u) * (1.0f - u);
+    default:  return u * u * u * (u * (u * 6.0f - 15.0f) + 10.0f);   // smootherstep
+    }
+}
+
+// Centripetal Catmull-Rom (Barry-Goldman form) between p1 and p2.
+static Vec3 demoSpline(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3, float u)
+{
+    if (length(p2 - p1) < 1e-4f) return p1;
+    auto knot = [](const Vec3& a, const Vec3& b) { return std::max(std::sqrt(length(b - a)), 1e-3f); };
+    const float t0 = 0.0f, t1 = t0 + knot(p0, p1), t2 = t1 + knot(p1, p2), t3 = t2 + knot(p2, p3);
+    const float t = t1 + (t2 - t1) * u;
+    const Vec3 a1 = p0 * ((t1 - t) / (t1 - t0)) + p1 * ((t - t0) / (t1 - t0));
+    const Vec3 a2 = p1 * ((t2 - t) / (t2 - t1)) + p2 * ((t - t1) / (t2 - t1));
+    const Vec3 a3 = p2 * ((t3 - t) / (t3 - t2)) + p3 * ((t - t2) / (t3 - t2));
+    const Vec3 b1 = a1 * ((t2 - t) / (t2 - t0)) + a2 * ((t - t0) / (t2 - t0));
+    const Vec3 b2 = a2 * ((t3 - t) / (t3 - t1)) + a3 * ((t - t1) / (t3 - t1));
+    return b1 * ((t2 - t) / (t2 - t1)) + b2 * ((t - t1) / (t2 - t1));
+}
+
+static void demoApplyCamera(float t)
+{
+    const int n = static_cast<int>(gDemoKeys.size());
+    if (n == 0) return;
+    const Mat4 cm = Scene::serviceCarMatrix(gLiftHeight, gServiceVisual.carYaw);
+    const Vec3 car(cm.m[12], cm.m[13], cm.m[14]);
+    auto eyeOf  = [&](int i) { const DemoKey& k = gDemoKeys[i]; return k.eyeRel ? car + k.eye : k.eye; };
+    auto lookOf = [&](int i) { const DemoKey& k = gDemoKeys[i]; return k.lookRel ? car + k.look : k.look; };
+
+    int i = 0;
+    while (i + 1 < n && gDemoKeys[i + 1].t <= t) ++i;
+    Vec3 eye, look; float fov;
+    if (i + 1 >= n) { eye = eyeOf(n - 1); look = lookOf(n - 1); fov = gDemoKeys[n - 1].fov; }
+    else
+    {
+        const DemoKey& a = gDemoKeys[i];
+        const DemoKey& b = gDemoKeys[i + 1];
+        const float u = demoEase(b.ease, (b.t > a.t) ? (t - a.t) / (b.t - a.t) : 1.0f);
+        const Vec3 e1 = eyeOf(i), e2 = eyeOf(i + 1), l1 = lookOf(i), l2 = lookOf(i + 1);
+        const Vec3 e0 = (i > 0) ? eyeOf(i - 1) : e1 * 2.0f - e2;
+        const Vec3 l0 = (i > 0) ? lookOf(i - 1) : l1 * 2.0f - l2;
+        const Vec3 e3 = (i + 2 < n) ? eyeOf(i + 2) : e2 * 2.0f - e1;
+        const Vec3 l3 = (i + 2 < n) ? lookOf(i + 2) : l2 * 2.0f - l1;
+        eye = demoSpline(e0, e1, e2, e3, u);
+        look = demoSpline(l0, l1, l2, l3, u);
+        fov = a.fov + (b.fov - a.fov) * u;
+    }
+    gCamera.position = eye;
+    gCamera.fov = fov;
+    const Vec3 d = look - eye;
+    const float flat = std::sqrt(d.x * d.x + d.z * d.z);
+    gCamera.yaw = std::atan2(d.z, d.x) * 180.0f / PI_F;
+    gCamera.pitch = std::atan2(d.y, (flat > 1e-4f) ? flat : 1e-4f) * 180.0f / PI_F;
+}
+
+// Off-screen output target at the recording size, plus two pixel-pack
+// buffers so reading frame N overlaps with encoding frame N-1.
+static bool demoCreateOutput()
+{
+    glGenRenderbuffers(1, &gOutRbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, gOutRbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, gWidth, gHeight);
+    glGenFramebuffers(1, &gOutFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, gOutFbo);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, gOutRbo);
+    const bool ok = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glGenBuffers(2, gOutPbo);
+    for (int i = 0; i < 2; ++i)
+    {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, gOutPbo[i]);
+        glBufferData(GL_PIXEL_PACK_BUFFER, static_cast<GLsizeiptr>(gWidth) * gHeight * 3, nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    return ok;
+}
+
+static void demoDrainPbo(int index)
+{
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gOutPbo[index]);
+    const void* px = glMapBuffer(GL_PIXEL_PACK_BUFFER, GL_READ_ONLY);
+    if (px && gDemoPipe) fwrite(px, 1, static_cast<size_t>(gWidth) * gHeight * 3, gDemoPipe);
+    glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+}
+
+// Called once per recorded frame, after the overlay is drawn.
+static void demoWriteFrame(int written)
+{
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, gOutFbo);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, gOutPbo[written & 1]);
+    glReadPixels(0, 0, gWidth, gHeight, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    if (written > 0) demoDrainPbo((written - 1) & 1);
+
+    // Small live preview in the window.
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBlitFramebuffer(0, 0, gWidth, gHeight, 0, 0, gPreviewW, gPreviewH, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+static bool demoOpenPipe()
+{
+    if (gDemoPipeFile.empty()) return true;   // dry run: render, write nothing
+    FILE* f = nullptr;
+    if (fopen_s(&f, gDemoPipeFile.c_str(), "r") != 0 || !f) { std::cout << "[Demo] cannot open " << gDemoPipeFile << "\n"; return false; }
+    std::string cmd; char buf[4096];
+    while (fgets(buf, sizeof(buf), f)) cmd += buf;
+    fclose(f);
+    while (!cmd.empty() && (cmd.back() == '\n' || cmd.back() == '\r')) cmd.pop_back();
+    gDemoPipe = _popen(cmd.c_str(), "wb");
+    if (!gDemoPipe) { std::cout << "[Demo] could not start encoder\n"; return false; }
+    return true;
+}
+
+static void demoClosePipe(int written)
+{
+    if (written > 0) demoDrainPbo((written - 1) & 1);
+    if (gDemoPipe) { fflush(gDemoPipe); _pclose(gDemoPipe); gDemoPipe = nullptr; }
+}
 
 static void printControls()
 {
@@ -2722,9 +2626,9 @@ static void printControls()
     std::cout << " TAB            release / capture the mouse cursor\n";
     std::cout << " L              wireframe on / off\n";
     std::cout << " V              print the geometry teaching view\n";
-    std::cout << " 1              normal full scene (top row or numpad)\n";
-    std::cout << " 2 / 3 / 4      isolate car / lift / robot construction (top row or numpad)\n";
-    std::cout << " 5 / 6 / 7      isolate cube / 28-seg cylinder / 48-seg cylinder (top row or numpad)\n";
+    std::cout << " 1              normal full scene (top row)\n";
+    std::cout << " 2 / 3 / 4      isolate car / lift / robot construction (top row)\n";
+    std::cout << " 5 / 6 / 7 / 8  isolate cube / 28-seg cylinder / 48-seg cylinder / UV sphere\n";
     std::cout << " N / B          next / previous construction stage\n";
     std::cout << " O              automatic garage-door open/close\n";
     std::cout << " Z / X / C      door close / open / STOP at current position\n";
@@ -2733,11 +2637,11 @@ static void printControls()
     std::cout << " T / G          rotate TOP robot turntable left / right (square pedestal fixed)\n";
     std::cout << " U / J          robot shoulder up / down\n";
     std::cout << " I / K          robot elbow up / down\n";
-    std::cout << " Y / H          robot head tilt top/bottom (full 180 deg: -90..+90)\n";
+    std::cout << " Y / H          robot wrist pitch (limits -270..+270 deg)\n";
     std::cout << " LEFT / RIGHT   robot wrist roll\n";
     std::cout << " F1/F2/F3/F4    scanner / impact driver / gripper / polisher\n";
     std::cout << " ENTER / NUMPAD ENTER   run complete scan/clean/polish + wheel-fastener service\n";
-    std::cout << " F5             toggle Cook-Torrance PBR / Gouraud shading\n";
+    std::cout << " F5             cycle shading: Cook-Torrance PBR -> Gouraud -> Phong\n";
     std::cout << " F6             material textures on/off (sampled array + procedural)\n";
     std::cout << " BACKSPACE      PROJECTION: perspective <-> orthographic\n";
     std::cout << " F7             normal/bump maps on/off\n";
@@ -2746,13 +2650,20 @@ static void printControls()
     std::cout << " F11            4x MSAA on/off\n";
     std::cout << " F12            SHOWCASE ORBIT - hands-free turntable around the vehicle\n";
     std::cout << " M              cycle lighting preset (Workshop / Studio / Night)\n";
+    std::cout << " --- RAY-TRACED UNDERBODY INSPECTION MONITOR (beside the lift) ---\n";
+    std::cout << " 9              enlarge / close the inspection view\n";
+    std::cout << " -              inspection-light shadow rays on / off\n";
+    std::cout << " =              cycle the inspection camera preset\n";
+    std::cout << " Insert/Delete  orbit the inspection camera\n";
+    std::cout << " PageDown       cycle the inspection light position\n";
+    std::cout << " Numpad 4/6 8/2 +/-   move the inspection light (x, z, height)\n";
+    std::cout << " 0              outside light: daylight <-> night\n";
     std::cout << " F              save a screenshot (SmartGarage_shot_NNN.bmp)\n";
     std::cout << "\n --- INTERACTIVE SCENE SWITCHES ---\n";
     std::cout << " ;              overhead work lights on / off\n";
-    std::cout << " '              vehicle head + tail light bars on / off\n";
+    std::cout << " '              vehicle light bars + headlight point lights on / off\n";
     std::cout << " /              neon sign on / off\n";
     std::cout << " END            hazard beacon flash on / off\n";
-    std::cout << " 9 / 0          ceiling fan slower / faster (0 = stopped)\n";
     std::cout << " HOME           drive the vehicle OUT of the bay / bring it back\n";
     std::cout << " PAGE UP        send the vehicle back outside, to replay the arrival\n";
     std::cout << "\n Command line: --autostart --showcase --preset N --capture file.bmp\n";
@@ -2764,11 +2675,6 @@ static void printControls()
     std::cout << " ESC            quit\n";
     std::cout << "============================================================\n" << std::endl;
 }
-
-
-// ============================================================================
-// Rendering pipeline helpers: shadow map -> HDR MRT -> bloom -> tone map.
-// ============================================================================
 
 struct ShadowTarget
 {
@@ -2785,11 +2691,6 @@ struct HDRTargets
     unsigned int pingFbo[2] = { 0, 0 };
     unsigned int pingColor[2] = { 0, 0 };
 
-    // 4x multisampled twin of the main target.  The scene is rasterised here
-    // and then RESOLVED into color[0]/color[1] with glBlitFramebuffer.  Without
-    // this the window's MSAA buffer is never used at all, because nothing is
-    // ever drawn to the default framebuffer - which is exactly the bug the old
-    // post-process edge blur was trying to paper over.
     unsigned int msFbo = 0;
     unsigned int msColor[2] = { 0, 0 };
     unsigned int msDepthRbo = 0;
@@ -2810,9 +2711,6 @@ static unsigned int gQuadVBO = 0;
 // cover the few metres inside the lamp's cone.
 static ShadowTarget gSpotShadow;
 
-// Build the lamp's view-projection.  A perspective frustum whose field of view
-// is the outer cone angle, so the depth map covers exactly what the cone lights
-// and no more - every texel is spent where it matters.
 static Mat4 buildSpotLightMatrix(const Vec3& pos, const Vec3& dir, float outerDeg)
 {
     Vec3 d = normalize(dir);
@@ -2858,12 +2756,6 @@ static void destroyHDRTargets(HDRTargets& t)
     t = HDRTargets();
 }
 
-// ---------------------------------------------------------------------------
-//  The multisampled scene target.  Two RGB16F sample textures (scene + bloom
-//  bright pass) plus a multisampled depth buffer.  If the driver refuses any
-//  part of it we simply fall back to the single-sample path and switch the
-//  post-process edge filter back on, so the program never fails to start.
-// ---------------------------------------------------------------------------
 static bool createMultisampleTarget(HDRTargets& t, int width, int height)
 {
     int maxSamples = 0;
@@ -2947,9 +2839,6 @@ static bool ensureHDRTargets(HDRTargets& t, int width, int height)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, t.depthRbo);
     bool hdrOK = glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
 
-    // The bloom chain runs at HALF resolution.  That is a quarter of the fill
-    // cost, and because the same 9-tap kernel now covers twice as many source
-    // pixels the glow is also noticeably wider and smoother.
     t.bloomWidth = (width / 2 > 1) ? width / 2 : 1;
     t.bloomHeight = (height / 2 > 1) ? height / 2 : 1;
 
@@ -3022,12 +2911,11 @@ static void drawCurrentContent()
             gWristPitch,
             gWristRoll,
             gRobotTool,
-            gFanAngle,
             gServiceVisual);
     }
     else if (isProgressiveTeachingObject())
     {
-        Scene::beginTeachingDraw(teachingLimit(), teachingHighlightFrom());
+        Scene::beginTeachingDraw(teachingLimit(), gTeachNoHighlight ? -1 : teachingHighlightFrom());
         if (gTeachObject == TEACH_CAR)
             Scene::drawCar(mat4Identity(), Vec3(0.680f, 0.300f, 0.115f));
         else if (gTeachObject == TEACH_LIFT)
@@ -3053,8 +2941,6 @@ static void drawCurrentContent()
 
 static Mat4 buildLightSpaceMatrix(Vec3& outDirection)
 {
-    // Rays enter from the open garage side and descend across the vehicle,
-    // giving the stainless planes long photographic highlight/shadow bands.
     outDirection = normalize(Vec3(0.18f, -1.0f, -0.38f)); // light -> scene
     Vec3 centre(0.0f, 2.2f, -1.0f);
     Vec3 lightPos = centre - outDirection * 28.0f;
@@ -3063,36 +2949,6 @@ static Mat4 buildLightSpaceMatrix(Vec3& outDirection)
     return lightProj * lightView;
 }
 
-
-// ---------------------------------------------------------------------------
-//  MATERIAL TEXTURE ARRAY
-//
-//  Until now every surface in this project was textured arithmetically in the
-//  fragment shader - there was no texture object, no UV coordinate, no
-//  sampling and no mip chain anywhere in the material path.  That is cheap and
-//  it never tiles, but it also means none of the actual machinery of texture
-//  mapping was being demonstrated.
-//
-//  This builds a real one: a GL_TEXTURE_2D_ARRAY with four 256x256 tiling
-//  layers, a full mip chain, GL_REPEAT wrapping, trilinear filtering and
-//  anisotropic filtering where the driver offers it.
-//
-//      layer 0   worn concrete floor
-//      layer 1   painted plaster wall
-//      layer 2   asphalt
-//      layer 3   steel tread plate
-//
-//  A 2D ARRAY rather than an atlas is deliberate: atlas tiles bleed into each
-//  other at the coarser mip levels, and they cannot use GL_REPEAT.  Each layer
-//  here wraps independently and correctly.
-//
-//  PACKING:  RGB is an albedo DETAIL multiplier centred on 1.0, stored as
-//  value/2 so the 0..1 texel range covers 0..2.  Alpha is roughness, stored
-//  directly.  One fetch therefore returns both maps.
-//
-//  The noise is periodic - every lookup wraps its lattice indices modulo the
-//  tile size - so each layer tiles seamlessly with no visible seam.
-// ---------------------------------------------------------------------------
 static const int kMatTexSize = 256;
 static const int kMatTexLayers = 4;
 
@@ -3165,10 +3021,6 @@ static unsigned int createMaterialTextureArray()
 
             // ---- layer 0: worn concrete -------------------------------
             {
-                // The texture deliberately carries MID and FINE detail only.
-                // Anything low-frequency would repeat every 2.9 m and the eye
-                // picks that up immediately; the large-scale variation is left
-                // to the non-tiling procedural noise in the shader instead.
                 const float broad = matFbm(u, v, 6, 3, 11);
                 const float grit = matValueNoise(u, v, 64, 23);
                 const float pores = matValueNoise(u, v, 128, 31);
@@ -3244,9 +3096,6 @@ static unsigned int createMaterialTextureArray()
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 
-    // Anisotropic filtering, if the driver exposes it.  The floor is seen at
-    // extremely grazing angles, which is exactly the case trilinear alone
-    // over-blurs.
     float maxAniso = 0.0f;
     glGetFloatv(0x84FF /* GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT */, &maxAniso);
     if (maxAniso > 1.0f)
@@ -3265,32 +3114,6 @@ static unsigned int createMaterialTextureArray()
     return tex;
 }
 
-// ---------------------------------------------------------------------------
-//  THE ENVIRONMENT PROBE
-//
-//  This is the most important single object in the whole renderer as far as
-//  the vehicle is concerned.  The Cybertruck body is bare stainless - metallic
-//  0.97 - which means it has NO diffuse response at all.  Every photon it
-//  shows the camera is either a direct specular highlight or a reflection of
-//  this probe.  The previous version stored it as 64x64 RGB8 with a peak value
-//  of about 0.25, so the truck had almost nothing to reflect and rendered as a
-//  dark grey silhouette.
-//
-//  Two changes fix that:
-//
-//    1. FLOAT STORAGE (RGB16F).  Light sources are allowed to exceed 1.0.  The
-//       ceiling strips sit at 5.0 and the daylight through the door at ~3.0,
-//       so they survive tone mapping as genuine bright streaks on the panels
-//       instead of being clamped flat.
-//
-//    2. HIGHER RESOLUTION (128).  With mipmaps that gives seven roughness
-//       levels, so a polished panel shows a sharp, readable reflection of the
-//       light bar while an unpolished one shows a soft smear - the same probe,
-//       sampled at a different level of detail.
-//
-//  It is still generated procedurally in code so the project stays a single
-//  self-contained build with no external asset paths to go wrong.
-// ---------------------------------------------------------------------------
 static unsigned int createEnvironmentCubemap()
 {
     const int S = 128;
@@ -3322,11 +3145,6 @@ static unsigned int createEnvironmentCubemap()
                     // A dark skirting strip grounds the reflection.
                     if (v < 0.14f) { r *= 0.42f; g *= 0.44f; b *= 0.48f; }
 
-                    // The wall-mounted amber strips that run down both bays.
-                    // These matter more than they look: a vertical body panel
-                    // reflects almost horizontally, so without some high
-                    // contrast at eye level a polished flank has nothing to
-                    // mirror and polishing it makes no visible difference.
                     const float barPhase = std::fmod(u * 5.0f + 0.5f, 1.0f);
                     if (barPhase > 0.455f && barPhase < 0.545f &&
                         v > 0.34f && v < 0.70f)
@@ -3423,19 +3241,13 @@ static unsigned int createEnvironmentCubemap()
     return tex;
 }
 
-// ---------------------------------------------------------------------------
-//  LIGHTING RIGS
-//
-//  One function per rig keeps the presets honest: each one is a complete,
-//  self-contained description of the lighting, not a pile of multipliers on
-//  top of the previous one.  A rig is eight point lights plus the directional
-//  key plus the exposure the rig was balanced for.
-// ---------------------------------------------------------------------------
+static const float kHeadlightIntensity = 1.6f;
+
 struct LightRig
 {
-    Vec3  pos[8];
-    Vec3  color[8];
-    float intensity[8];
+    Vec3  pos[10];          // 8 rig lights + 2 vehicle headlights
+    Vec3  color[10];
+    float intensity[10];
     int   count;
     Vec3  keyColor;
     float keyIntensity;
@@ -3452,10 +3264,6 @@ static void buildWorkshopRig(LightRig& r)
         Vec3(-6.4f, 6.32f,   2.30f), Vec3(6.4f, 6.32f,  2.85f),
         Vec3(-6.4f, 6.32f,   8.50f), Vec3(6.4f, 6.32f,  9.05f)
     };
-    // Switching the bays off has to change the LIGHT, not just hide the
-    // fixtures - otherwise the lamps disappear and the room stays lit, which
-    // is the single most obvious way to make a scene look faked.  A small
-    // residual value stands in for the emergency lighting that never goes out.
     const float bayLevel = gSwitches.ceilingLights ? 1.28f : 0.06f;
     for (int i = 0; i < 8; ++i)
     {
@@ -3470,9 +3278,6 @@ static void buildWorkshopRig(LightRig& r)
     r.iblScale = gSwitches.ceilingLights ? 1.0f : 0.30f;
 }
 
-// A three-point product rig aimed at the vehicle on the lift.  Key high and
-// forward-left, fill low and opposite, two rim lights raking down each flank
-// to draw the fold lines, plus a soft overhead pair so the roof is not black.
 static void buildStudioRig(LightRig& r, const Vec3& subject)
 {
     r.count = 8;
@@ -3501,9 +3306,6 @@ static void buildStudioRig(LightRig& r, const Vec3& subject)
     r.keyColor = Vec3(0.97f, 0.95f, 0.92f);
     r.keyIntensity = 0.30f;
     r.exposure = 0.70f;
-    // Pull the ambient probe well down.  A product rig earns its look from a
-    // few hard, placed sources; leaving the room light at full strength just
-    // flattens the result back into the workshop view.
     r.iblScale = 0.52f;
 }
 
@@ -3523,6 +3325,16 @@ static void buildNightRig(LightRig& r)
     r.iblScale = 0.55f;
 }
 
+// Night swaps the sun for a dim blue moon and weakens the environment probe.
+// Daylight leaves the rig untouched: the rig's key light IS the sun.
+static void applyDayNight(LightRig& r)
+{
+    if (!gNight) return;
+    r.keyColor = Vec3(0.36f, 0.46f, 0.78f);
+    r.keyIntensity = 0.05f;
+    r.iblScale *= 0.30f;
+}
+
 static void buildActiveRig(LightRig& r, const Vec3& subject)
 {
     switch (gLightingPreset)
@@ -3531,6 +3343,7 @@ static void buildActiveRig(LightRig& r, const Vec3& subject)
     case LIGHT_NIGHT:  buildNightRig(r);           break;
     default:           buildWorkshopRig(r);        break;
     }
+    applyDayNight(r);
 }
 
 static void uploadSceneUniforms(unsigned int program,
@@ -3557,12 +3370,21 @@ static void uploadSceneUniforms(unsigned int program,
     LightRig rig;
     buildActiveRig(rig, subject);
 
+    if (gSwitches.vehicleLights && gTeachObject == TEACH_SCENE && rig.count <= 8)
+    {
+        const Mat4 car = Scene::serviceCarMatrix(gLiftHeight, gServiceVisual.carYaw);
+        for (int side = -1; side <= 1; side += 2)
+        {
+            rig.pos[rig.count] = transformPoint(car, Scene::headlightLocalPosition(side));
+            rig.color[rig.count] = Vec3(1.00f, 0.96f, 0.88f);
+            rig.intensity[rig.count] = kHeadlightIntensity;
+            ++rig.count;
+        }
+    }
+
     glUniform1f(glGetUniformLocation(program, "uIblIntensity"),
         gIblIntensity * rig.iblScale);
 
-    // Surface finish defaults.  SceneObjects overrides these per draw call,
-    // but setting them here means any object drawn before the first override
-    // still has well-defined values.
     glUniform1f(glGetUniformLocation(program, "uPolish"), 0.0f);
     glUniform1f(glGetUniformLocation(program, "uClearCoat"), 0.0f);
     glUniform1f(glGetUniformLocation(program, "uAnisotropy"), 0.0f);
@@ -3619,7 +3441,6 @@ static float activeRigExposure(const Vec3& subject)
     return rig.exposure;
 }
 
-
 // ---- offline capture configuration, set from argv ------------------------
 static std::string gCapturePath;
 static int   gCaptureFrames = 24;
@@ -3629,14 +3450,401 @@ static float gCaptureCarYaw = 0.0f;
 static bool  gCaptureHasCam = false;
 static float gCaptureCam[5] = { 0, 0, 0, 0, 0 };
 static float gCaptureLift = -1.0f;
+static float gCaptureDoor = -1.0f;      // freeze the roller door at this opening (0..4.9 m)
 static float gCaptureCarDrive = -1.0f;   // freeze the arrival part-way, for inspection
 static bool  gCaptureNoTextures = false;
 static float gCaptureFov = -1.0f;
-// Begin the automatic service sequence as soon as the window opens.  Handy
-// when the project is being demonstrated from a shortcut rather than driven
-// from the keyboard.
 static bool  gAutoStartService = false;
 static bool  gCaptureRobot = false;
+// More capture-only switches, so every comparison figure in the report can be
+// rendered by the project itself from the command line.
+static int   gCaptureTeach = 0;        // 1..8 = the same object as keys 1..8
+static int   gCaptureStage = -1;       // construction stage for teach 2/3/4
+static bool  gCaptureWire = false;
+static float gCaptureSimTime = -1.0f;
+static bool  gCaptureFreeze = false;
+// Background colour of the HDR scene pass (--clear r g b); a light one is used
+// for the engineering-style orthographic views.
+static float gClearColor[3] = { 0.012f, 0.015f, 0.022f };   // used only with --clear
+static bool  gClearOverride = false;
+// The sky is the clear colour: bright daylight blue, or a near-black night.
+static const float kSkyDay[3]   = { 0.42f, 0.70f, 1.30f };
+static const float kSkyNight[3] = { 0.008f, 0.011f, 0.025f };
+
+struct RtMonitor
+{
+    unsigned int prog = 0, screenProg = 0, blitProg = 0;
+    unsigned int fbo = 0, tex = 0, itemsTex = 0, chunksTex = 0;
+    int w = 0, h = 0;
+    bool ok = false;
+    int itemCount = 0, triCount = 0, chunkCount = 0;
+    float traceMs = 0.0f;
+};
+static RtMonitor gRt;
+
+static const int kRtItemTexW = 4096;     // texels per row of the item texture
+static const int kRtItemTexH = 64;       // 4096 * 64 / 4 = 65536 items
+static const int kRtChunkTexW = 1024;
+static const int kRtChunkTexH = 16;      // 1024 * 16 / 2 = 8192 chunks
+static const int kRtChunkSize = 16;      // items per bounding sphere
+
+static void rtPickSize(int& w, int& h)
+{
+    if (gRtLarge) { w = 1024; h = 640; }
+    else          { w = 512;  h = 320; }
+    w *= gRtScale; h *= gRtScale;
+}
+
+static void rtAllocTarget(int w, int h)
+{
+    if (gRt.tex) glDeleteTextures(1, &gRt.tex);
+    if (gRt.fbo) glDeleteFramebuffers(1, &gRt.fbo);
+    glGenTextures(1, &gRt.tex);
+    glBindTexture(GL_TEXTURE_2D, gRt.tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenFramebuffers(1, &gRt.fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, gRt.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gRt.tex, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    {
+        std::cout << "[RayTrace] framebuffer incomplete - monitor disabled.\n";
+        gRt.ok = false;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gRt.w = w;
+    gRt.h = h;
+}
+
+static unsigned int rtMakeFloatTexture(int w, int h)
+{
+    unsigned int t = 0;
+    glGenTextures(1, &t);
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return t;
+}
+
+static bool rtInit()
+{
+    gRt.prog = createRayTraceShaderProgram();
+    gRt.screenProg = createMonitorShaderProgram();
+    gRt.blitProg = createBlitShaderProgram();
+    if (!gRt.prog || !gRt.screenProg || !gRt.blitProg)
+    {
+        std::cout << "[RayTrace] shader compilation failed - the rest of the garage is unaffected; "
+                     "the inspection monitor stays off.\n";
+        if (gRt.prog) glDeleteProgram(gRt.prog);
+        if (gRt.screenProg) glDeleteProgram(gRt.screenProg);
+        if (gRt.blitProg) glDeleteProgram(gRt.blitProg);
+        gRt.prog = gRt.screenProg = gRt.blitProg = 0;
+        return false;
+    }
+    gRt.itemsTex = rtMakeFloatTexture(kRtItemTexW, kRtItemTexH);
+    gRt.chunksTex = rtMakeFloatTexture(kRtChunkTexW, kRtChunkTexH);
+    gRt.ok = true;
+    int w, h;
+    rtPickSize(w, h);
+    rtAllocTarget(w, h);
+    return gRt.ok;
+}
+
+static void rtApplySize()
+{
+    if (!gRt.ok) return;
+    int w, h;
+    rtPickSize(w, h);
+    if (w != gRt.w || h != gRt.h) rtAllocTarget(w, h);
+}
+
+static void rtDestroy()
+{
+    if (gRt.tex) glDeleteTextures(1, &gRt.tex);
+    if (gRt.itemsTex) glDeleteTextures(1, &gRt.itemsTex);
+    if (gRt.chunksTex) glDeleteTextures(1, &gRt.chunksTex);
+    if (gRt.fbo) glDeleteFramebuffers(1, &gRt.fbo);
+    if (gRt.prog) glDeleteProgram(gRt.prog);
+    if (gRt.screenProg) glDeleteProgram(gRt.screenProg);
+    if (gRt.blitProg) glDeleteProgram(gRt.blitProg);
+    gRt = RtMonitor();
+}
+
+// world -> local rows of an affine model matrix (column-major m).
+static void rtInverseRows(const Mat4& M, float out[12])
+{
+    const float* m = M.m;
+    const float a = m[0], b = m[4], c = m[8];
+    const float d = m[1], e = m[5], f = m[9];
+    const float g = m[2], h = m[6], i = m[10];
+    const float A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    float det = a * A + b * B + c * C;
+    if (std::fabs(det) < 1e-12f) det = 1e-12f;
+    const float r = 1.0f / det;
+    const float inv[3][3] = {
+        { A * r, -(b * i - c * h) * r, (b * f - c * e) * r },
+        { B * r, (a * i - c * g) * r, -(a * f - c * d) * r },
+        { C * r, -(a * h - b * g) * r, (a * e - b * d) * r } };
+    const float t[3] = { m[12], m[13], m[14] };
+    for (int row = 0; row < 3; ++row)
+    {
+        out[row * 4 + 0] = inv[row][0];
+        out[row * 4 + 1] = inv[row][1];
+        out[row * 4 + 2] = inv[row][2];
+        out[row * 4 + 3] = -(inv[row][0] * t[0] + inv[row][1] * t[1] + inv[row][2] * t[2]);
+    }
+}
+
+// Inspection light presets (world space).  Key PageDown cycles them; the numpad
+// moves the light continuously.
+static const Vec3 kRtLights[5] = {
+    Vec3(0.0f, 0.30f, -2.0f),    // 0: work lamp on the floor under the lift
+    Vec3(3.2f, 0.60f, -5.0f),    // 1: floor lamp, front right
+    Vec3(-2.6f, 0.60f, -6.0f),   // 2: floor lamp, robot side
+    Vec3(3.4f, 2.60f, -2.0f),    // 3: side lamp at car height
+    Vec3(0.0f, 0.60f, 3.0f) };   // 4: floor lamp behind the ramp
+static const char* kRtPresetNames[4] = {
+    "Rear underbody", "Nose underbody", "Opposite-side overview", "LIVE robot-side diagnostic" };
+
+static void rtCamera(Vec3& pos, Vec3& fwd, Vec3& right, Vec3& up)
+{
+    const float topY = Scene::liftTopY(gLiftHeight);
+    Vec3 T(0.0f, 0.5f * topY + 0.45f, -2.0f);
+    static const Vec3 basePos[4] = {
+        Vec3(0.35f, 0.55f, 6.8f),     // 0 behind the car, low, looking along the underbody
+        Vec3(0.35f, 0.55f, -9.0f),    // 1 in front of the nose
+        Vec3(5.4f, 0.75f, -3.6f),     // 2 opposite side, useful for comparison
+        Vec3(-5.75f, 0.78f, -5.10f) };// 3 robot side, front-left of the work area
+    if ((gRtPreset & 3) == 3)
+        T = Vec3(-0.72f, 0.5f * topY + 0.52f, -2.10f);
+
+    Vec3 p = basePos[gRtPreset & 3];
+    const float yaw = radians(gRtYaw);
+    const float cs = std::cos(yaw), sn = std::sin(yaw);
+    const Vec3 rel(p.x - T.x, 0.0f, p.z - T.z);
+    p = Vec3(T.x + rel.x * cs + rel.z * sn, p.y, T.z - rel.x * sn + rel.z * cs);
+    pos = p;
+    fwd = normalize(T - p);
+    right = normalize(cross(fwd, Vec3(0.0f, 1.0f, 0.0f)));
+    up = cross(right, fwd);
+}
+
+static void rtRender()
+{
+    if (!gRt.ok || !gRtEnabled) return;
+    // The small monitor refreshes every second frame (it is a monitor, not the main view);
+    // the enlarged view and offline captures trace every frame.
+    static unsigned frameTick = 0;
+    ++frameTick;
+    if (!gRtLarge && gCapturePath.empty() && !gDemoActive && (frameTick & 1u)) return;
+    const double t0 = glfwGetTime();
+
+    // ---- 1. record the live scene -----------------------------------------
+    std::vector<Scene::RtItem> items;
+    items.reserve(6000);
+    Scene::recordInspectionGeometry(items, gLiftHeight, gRobotBaseYaw, gJoint1Angle, gJoint2Angle,
+                                    gWristPitch, gWristRoll, gRobotTool, gServiceVisual);
+    const int maxItems = kRtItemTexW * kRtItemTexH / 4;
+    if (static_cast<int>(items.size()) > maxItems) items.resize(maxItems);
+    // Order the items along a Morton (Z-order) curve of their centres so that each
+    // chunk of 24 consecutive items is spatially compact and its bounding sphere tight.
+    {
+        const int cnt = static_cast<int>(items.size());
+        std::vector<Vec3> cen(cnt);
+        Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+        for (int i = 0; i < cnt; ++i)
+        {
+            const Scene::RtItem& it = items[i];
+            cen[i] = (it.type == 3) ? (it.a + it.b + it.c) * (1.0f / 3.0f) : Vec3(it.m.m[12], it.m.m[13], it.m.m[14]);
+            lo = Vec3(std::fmin(lo.x, cen[i].x), std::fmin(lo.y, cen[i].y), std::fmin(lo.z, cen[i].z));
+            hi = Vec3(std::fmax(hi.x, cen[i].x), std::fmax(hi.y, cen[i].y), std::fmax(hi.z, cen[i].z));
+        }
+        auto spread = [](unsigned v) { v &= 0x3ff; v = (v | (v << 16)) & 0x030000FF; v = (v | (v << 8)) & 0x0300F00F; v = (v | (v << 4)) & 0x030C30C3; v = (v | (v << 2)) & 0x09249249; return v; };
+        std::vector<std::pair<unsigned, int>> keyed(cnt);
+        for (int i = 0; i < cnt; ++i)
+        {
+            const float ex = std::fmax(hi.x - lo.x, 1e-3f), ey = std::fmax(hi.y - lo.y, 1e-3f), ez = std::fmax(hi.z - lo.z, 1e-3f);
+            const unsigned qx = static_cast<unsigned>((cen[i].x - lo.x) / ex * 1023.0f);
+            const unsigned qy = static_cast<unsigned>((cen[i].y - lo.y) / ey * 1023.0f);
+            const unsigned qz = static_cast<unsigned>((cen[i].z - lo.z) / ez * 1023.0f);
+            keyed[i] = std::make_pair(spread(qx) | (spread(qy) << 1) | (spread(qz) << 2), i);
+        }
+        std::sort(keyed.begin(), keyed.end());
+        std::vector<Scene::RtItem> sorted;
+        sorted.reserve(cnt);
+        for (int i = 0; i < cnt; ++i) sorted.push_back(items[keyed[i].second]);
+        items.swap(sorted);
+    }
+    const int n = static_cast<int>(items.size());
+
+    // ---- 2. pack into textures --------------------------------------------
+    std::vector<float> itemData(static_cast<size_t>(kRtItemTexW) * kRtItemTexH * 4, 0.0f);
+    std::vector<float> chunkData(static_cast<size_t>(kRtChunkTexW) * kRtChunkTexH * 4, 0.0f);
+    std::vector<Vec3> ic(n);
+    std::vector<float> ir(n);
+    int tris = 0;
+    for (int i = 0; i < n; ++i)
+    {
+        const Scene::RtItem& it = items[i];
+        float* d = &itemData[static_cast<size_t>(i) * 16];
+        if (it.type == 3)
+        {
+            d[0] = it.a.x; d[1] = it.a.y; d[2] = it.a.z; d[3] = 0.0f;
+            d[4] = it.b.x; d[5] = it.b.y; d[6] = it.b.z; d[7] = 0.0f;
+            d[8] = it.c.x; d[9] = it.c.y; d[10] = it.c.z; d[11] = 0.0f;
+            ic[i] = (it.a + it.b + it.c) * (1.0f / 3.0f);
+            ir[i] = std::fmax(length(it.a - ic[i]), std::fmax(length(it.b - ic[i]), length(it.c - ic[i])));
+            ++tris;
+        }
+        else
+        {
+            rtInverseRows(it.m, d);
+            const float* m = it.m.m;
+            ic[i] = Vec3(m[12], m[13], m[14]);
+            const float sx = m[0] * m[0] + m[1] * m[1] + m[2] * m[2];
+            const float sy = m[4] * m[4] + m[5] * m[5] + m[6] * m[6];
+            const float sz = m[8] * m[8] + m[9] * m[9] + m[10] * m[10];
+            ir[i] = 0.5f * std::sqrt(sx + sy + sz);
+        }
+        d[12] = it.color.x; d[13] = it.color.y; d[14] = it.color.z;
+        d[15] = static_cast<float>(it.type) + (it.emissive ? 8.0f : 0.0f);
+    }
+    int chunks = 0;
+    for (int c0 = 0; c0 < n && chunks < kRtChunkTexW * kRtChunkTexH / 2; c0 += kRtChunkSize, ++chunks)
+    {
+        const int c1 = (c0 + kRtChunkSize < n) ? c0 + kRtChunkSize : n;
+        Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+        for (int i = c0; i < c1; ++i)
+        {
+            lo = Vec3(std::fmin(lo.x, ic[i].x - ir[i]), std::fmin(lo.y, ic[i].y - ir[i]), std::fmin(lo.z, ic[i].z - ir[i]));
+            hi = Vec3(std::fmax(hi.x, ic[i].x + ir[i]), std::fmax(hi.y, ic[i].y + ir[i]), std::fmax(hi.z, ic[i].z + ir[i]));
+        }
+        const Vec3 ctr = (lo + hi) * 0.5f;
+        float rad = 0.0f;
+        for (int i = c0; i < c1; ++i) rad = std::fmax(rad, length(ic[i] - ctr) + ir[i]);
+        float* d = &chunkData[static_cast<size_t>(chunks) * 8];
+        d[0] = ctr.x; d[1] = ctr.y; d[2] = ctr.z; d[3] = rad + 0.01f;
+        d[4] = static_cast<float>(c0); d[5] = static_cast<float>(c1 - c0); d[6] = 0.0f; d[7] = 0.0f;
+    }
+    gRt.itemCount = n;
+    gRt.triCount = tris;
+    gRt.chunkCount = chunks;
+
+    // ---- save state --------------------------------------------------------
+    GLint prevFbo = 0, prevProg = 0, vp[4];
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+    glGetIntegerv(GL_CURRENT_PROGRAM, &prevProg);
+    glGetIntegerv(GL_VIEWPORT, vp);
+    const GLboolean wasDepth = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean wasBlend = glIsEnabled(GL_BLEND);
+    const GLboolean wasCull = glIsEnabled(GL_CULL_FACE);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gRt.itemsTex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kRtItemTexW, std::min(kRtItemTexH, (n * 4 + kRtItemTexW - 1) / kRtItemTexW + 1), GL_RGBA, GL_FLOAT, itemData.data());
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, gRt.chunksTex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kRtChunkTexW, std::min(kRtChunkTexH, (chunks * 2 + kRtChunkTexW - 1) / kRtChunkTexW + 1), GL_RGBA, GL_FLOAT, chunkData.data());
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gRt.itemsTex);
+
+    // ---- 3. one ray (plus a shadow ray) per pixel ---------------------------
+    Vec3 cp, cf, cr, cu;
+    rtCamera(cp, cf, cr, cu);
+    const Vec3 light = gRtLightCustom ? gRtLight : kRtLights[gRtLightIdx % 5];
+    glBindFramebuffer(GL_FRAMEBUFFER, gRt.fbo);
+    glViewport(0, 0, gRt.w, gRt.h);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glUseProgram(gRt.prog);
+    glUniform1i(glGetUniformLocation(gRt.prog, "uItems"), 0);
+    glUniform1i(glGetUniformLocation(gRt.prog, "uChunks"), 1);
+    glUniform1i(glGetUniformLocation(gRt.prog, "uChunkCount"), chunks);
+    glUniform3f(glGetUniformLocation(gRt.prog, "uCamPos"), cp.x, cp.y, cp.z);
+    glUniform3f(glGetUniformLocation(gRt.prog, "uCamFwd"), cf.x, cf.y, cf.z);
+    glUniform3f(glGetUniformLocation(gRt.prog, "uCamRight"), cr.x, cr.y, cr.z);
+    glUniform3f(glGetUniformLocation(gRt.prog, "uCamUp"), cu.x, cu.y, cu.z);
+    glUniform1f(glGetUniformLocation(gRt.prog, "uTanHalfFov"), std::tan(radians(32.0f)));
+    glUniform1f(glGetUniformLocation(gRt.prog, "uAspect"), static_cast<float>(gRt.w) / static_cast<float>(gRt.h));
+    glUniform3f(glGetUniformLocation(gRt.prog, "uLightPos"), light.x, light.y, light.z);
+    glUniform1f(glGetUniformLocation(gRt.prog, "uLightPower"), 4.6f);
+    glUniform1i(glGetUniformLocation(gRt.prog, "uShadows"), gRtShadows ? 1 : 0);
+    drawFullscreenQuad();
+
+    // ---- restore -------------------------------------------------------------
+    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+    glViewport(vp[0], vp[1], vp[2], vp[3]);
+    glUseProgram(static_cast<GLuint>(prevProg));
+    if (wasDepth) glEnable(GL_DEPTH_TEST);
+    if (wasBlend) glEnable(GL_BLEND);
+    if (wasCull) glEnable(GL_CULL_FACE);
+    glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (!gCapturePath.empty()) glFinish();   // capture runs: include the GPU time in the measurement
+    gRt.traceMs = static_cast<float>((glfwGetTime() - t0) * 1000.0);
+}
+
+// The monitor's screen in the garage: a quad that shows the traced texture.
+static void rtDrawScreen(const Mat4& view, const Mat4& projection)
+{
+    if (!gRt.ok || !gRtEnabled || gTeachObject != TEACH_SCENE) return;
+    glUseProgram(gRt.screenProg);
+    const Mat4 model = Scene::inspectionMonitorMatrix();
+    glUniformMatrix4fv(glGetUniformLocation(gRt.screenProg, "uModel"), 1, GL_FALSE, model.m);
+    glUniformMatrix4fv(glGetUniformLocation(gRt.screenProg, "uView"), 1, GL_FALSE, view.m);
+    glUniformMatrix4fv(glGetUniformLocation(gRt.screenProg, "uProjection"), 1, GL_FALSE, projection.m);
+    glUniform1f(glGetUniformLocation(gRt.screenProg, "uGain"), 1.05f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gRt.tex);
+    glUniform1i(glGetUniformLocation(gRt.screenProg, "uTex"), 0);
+    Primitives::drawCubeMesh();
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// Enlarged view (key 9): the same texture, drawn over the finished frame.
+static void rtDrawOverlay()
+{
+    if (!gRt.ok || !gRtEnabled || !gRtLarge) return;
+    int ow, oh;
+    if (gRtFull) { ow = gWidth; oh = gHeight; }
+    else
+    {
+        ow = static_cast<int>(gWidth * 0.84f);
+        oh = static_cast<int>(ow / 1.6f);
+        if (oh > static_cast<int>(gHeight * 0.86f)) { oh = static_cast<int>(gHeight * 0.86f); ow = static_cast<int>(oh * 1.6f); }
+    }
+    glDisable(GL_DEPTH_TEST);
+    glViewport((gWidth - ow) / 2, (gHeight - oh) / 2, ow, oh);
+    glUseProgram(gRt.blitProg);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gRt.tex);
+    glUniform1i(glGetUniformLocation(gRt.blitProg, "uTex"), 0);
+    drawFullscreenQuad();
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glViewport(0, 0, gWidth, gHeight);
+    glEnable(GL_DEPTH_TEST);
+}
+
+static void advanceSimulation(float dt)
+{
+    updateServiceAutomation(dt * gServiceSpeed);
+    updateCarDrive(dt);
+    Scene::setSwitches(gSwitches);
+    gDoorOffset = moveToward(gDoorOffset, gDoorTarget, kDoorSpeed * dt);
+    const float lc = clampf(moveToward(gLiftHeight, gLiftTarget, kLiftSpeed * dt), 0.0f, 3.80f);
+    if (liftPositionSafe(lc)) gLiftHeight = lc;
+}
 
 static void parseCommandLine(int argc, char** argv)
 {
@@ -3649,6 +3857,7 @@ static void parseCommandLine(int argc, char** argv)
         else if (a == "--frames" && i + 1 < argc)  gCaptureFrames = atoi(argv[++i]);
         else if (a == "--polish")                  next(gCapturePolish);
         else if (a == "--lift")                    next(gCaptureLift);
+        else if (a == "--door")                    next(gCaptureDoor);
         else if (a == "--cardrive")                next(gCaptureCarDrive);
         else if (a == "--preset" && i + 1 < argc)
         {
@@ -3672,6 +3881,7 @@ static void parseCommandLine(int argc, char** argv)
         // Capture-only switches, so the figures in the report and the slides
         // are rendered by the project itself rather than mocked up.
         else if (a == "--gouraud")  gShadingMode = 1;
+        else if (a == "--phong")    gShadingMode = 2;
         else if (a == "--notex")    gCaptureNoTextures = true;
         else if (a == "--dirt")     next(gCaptureDirt);
         else if (a == "--caryaw")   next(gCaptureCarYaw);
@@ -3706,7 +3916,44 @@ static void parseCommandLine(int argc, char** argv)
         else if (a == "--radius") next(gShowcaseRadius);
         else if (a == "--height") next(gShowcaseHeight);
         else if (a == "--fov")    next(gCaptureFov);
+        else if (a == "--noshadow") gShadowsEnabled = false;
+        else if (a == "--nobump")   gNormalMapsEnabled = false;
+        else if (a == "--norefl")   gReflectionsEnabled = false;
+        else if (a == "--nobloom")  gBloomEnabled = false;
+        else if (a == "--rtfull")  { gRtLarge = true; gRtFull = true; }
+        else if (a == "--rtlarge") gRtLarge = true;
+        else if (a == "--rtpreset" && i + 1 < argc) gRtPreset = atoi(argv[++i]) & 3;
+        else if (a == "--rtshadow" && i + 1 < argc) gRtShadows = atoi(argv[++i]) != 0;
+        else if (a == "--rtyaw")   next(gRtYaw);
+        else if (a == "--rtlightidx" && i + 1 < argc) gRtLightIdx = atoi(argv[++i]) % 5;
+        else if (a == "--rtlight" && i + 3 < argc)
+        {
+            gRtLight = Vec3(static_cast<float>(atof(argv[i + 1])), static_cast<float>(atof(argv[i + 2])), static_cast<float>(atof(argv[i + 3])));
+            i += 3;
+            gRtLightCustom = true;
+        }
+        else if (a == "--night")  { gNight = true; }
+        else if (a == "--nolights") gSwitches.ceilingLights = false;
+        else if (a == "--headlightsoff") gSwitches.vehicleLights = false;
+        else if (a == "--wire")     gCaptureWire = true;
+        else if (a == "--nohighlight") gTeachNoHighlight = true;
+        else if (a == "--clear" && i + 3 < argc)
+        {
+            for (int k = 0; k < 3; ++k) gClearColor[k] = static_cast<float>(atof(argv[++i]));
+            gClearOverride = true;
+        }
+        else if (a == "--vignette") next(gVignette);
+        else if (a == "--grain")    next(gGrain);
+        else if (a == "--teach" && i + 1 < argc) gCaptureTeach = atoi(argv[++i]);
+        else if (a == "--stage" && i + 1 < argc) gCaptureStage = atoi(argv[++i]);
+        else if (a == "--simtime")  next(gCaptureSimTime);
         else if (a == "--ibl")      next(gIblIntensity);
+        else if (a == "--demo" && i + 1 < argc)      { gDemoScript = argv[++i]; gDemoActive = true; }
+        else if (a == "--pipe" && i + 1 < argc)      gDemoPipeFile = argv[++i];
+        else if (a == "--fps")                       next(gDemoFps);
+        else if (a == "--demostart" && i + 1 < argc) gDemoStart = atoi(argv[++i]);
+        else if (a == "--demoend" && i + 1 < argc)   gDemoEnd = atoi(argv[++i]);
+        else if (a == "--rtscale" && i + 1 < argc)   gRtScale = std::max(1, atoi(argv[++i]));
         else if (a == "--exposure") next(gExposure);
     }
 }
@@ -3724,9 +3971,14 @@ int main(int argc, char** argv)
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_SAMPLES, 4);   // 4x multisampling - smoother cube edges
+    glfwWindowHint(GLFW_SAMPLES, gDemoActive ? 0 : 4);   // 4x multisampling - smoother cube edges
+    if (gDemoActive && !loadDemoScript(gDemoScript)) return -1;
 
-    GLFWwindow* window = glfwCreateWindow(gWidth, gHeight, kTitle, nullptr, nullptr);
+    // While recording, the window is only a small preview; frames are drawn
+    // into an off-screen target at the full recording size.
+    GLFWwindow* window = gDemoActive
+        ? glfwCreateWindow(gPreviewW, gPreviewH, kTitle, nullptr, nullptr)
+        : glfwCreateWindow(gWidth, gHeight, kTitle, nullptr, nullptr);
     if (window == nullptr)
     {
         std::cout << "Failed to create the GLFW window." << std::endl;
@@ -3735,9 +3987,11 @@ int main(int argc, char** argv)
     }
 
     glfwMakeContextCurrent(window);
-    glfwSwapInterval(gReelActive ? 0 : 1);   // v-sync, off while recording
+    glfwSwapInterval((gReelActive || gDemoActive) ? 0 : 1);   // v-sync, off while recording
 
     glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
+    // A recording runs to its last frame: closing the preview window must not cut it short.
+    glfwSetWindowCloseCallback(window, [](GLFWwindow* w) { if (gDemoActive) glfwSetWindowShouldClose(w, GLFW_FALSE); });
     glfwSetCursorPosCallback(window, cursorPosCallback);
     glfwSetScrollCallback(window, scrollCallback);
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -3801,8 +4055,23 @@ int main(int argc, char** argv)
     initFullscreenQuad();
     Primitives::init();
     Scene::init(shaderProgram);
+    if (!rtInit())
+        std::cout << "[RayTrace] inspection monitor unavailable.\n";
+    else
+        rtApplySize();
 
     resetCamera();
+    if (gCaptureTeach >= 1 && gCaptureTeach <= 8)
+    {
+        setTeachingMode(static_cast<TeachingObject>(gCaptureTeach - 1));
+        if (gCaptureStage >= 0 && gCaptureStage < teachingStageCount())
+            gTeachStage = gCaptureStage;
+    }
+    if (gCaptureWire)
+    {
+        gWireframe = true;
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    }
     if (gCaptureHasCam)
     {
         gCamera.position = Vec3(gCaptureCam[0], gCaptureCam[1], gCaptureCam[2]);
@@ -3817,6 +4086,7 @@ int main(int argc, char** argv)
     if (gCaptureDirt >= 0.0f) gServiceVisual.dirtAmount = gCaptureDirt;
     gServiceVisual.carYaw = gCaptureCarYaw;
     if (gCaptureLift >= 0.0f) { gLiftHeight = gCaptureLift; gLiftTarget = gCaptureLift; }
+    if (gCaptureDoor >= 0.0f) { gDoorOffset = gCaptureDoor; gDoorTarget = gCaptureDoor; }
     if (gCaptureCarDrive >= 0.0f) { gSwitches.carDrive = gCaptureCarDrive; gCarDriveTarget = gCaptureCarDrive; }
     if (gCaptureNoTextures) { gTexturesEnabled = false; Scene::setTexturesEnabled(false); }
     if (gCaptureFov > 0.0f) gCamera.fov = gCaptureFov;
@@ -3830,7 +4100,35 @@ int main(int argc, char** argv)
 
     if (gAutoStartService) startServiceDemo();
 
+    if (gCaptureSimTime >= 0.0f)
+    {
+        startServiceDemo();
+        ServiceState last = gServiceState;
+        const int steps = static_cast<int>(gCaptureSimTime * 24.0f);
+        for (int i = 0; i < steps; ++i)
+        {
+            advanceSimulation(1.0f / 24.0f);
+            if (gServiceState != last)
+            {
+                std::printf("[SimTime] t=%.2f s -> state %d\n",
+                            static_cast<float>(i + 1) / 24.0f, static_cast<int>(gServiceState));
+                last = gServiceState;
+            }
+        }
+        gCaptureFreeze = true;   // hold this exact state while the frame is captured
+    }
+
     int captureCountdown = gCapturePath.empty() ? -1 : gCaptureFrames;
+    gInputLocked = !gCapturePath.empty() || gDemoActive;
+    int demoWritten = 0;
+    const int demoFrames = gDemoActive ? static_cast<int>(std::lround(gDemoLength * gDemoFps)) : 0;
+    if (gDemoActive)
+    {
+        if (gDemoEnd < 0 || gDemoEnd > demoFrames) gDemoEnd = demoFrames;
+        if (!demoCreateOutput() || !demoOpenPipe()) { glfwDestroyWindow(window); glfwTerminate(); return -1; }
+        std::printf("[Demo] frames %d..%d of %d at %.0f fps, %d x %d\n", gDemoStart, gDemoEnd, demoFrames, gDemoFps, gWidth, gHeight);
+    }
+    const double demoClock0 = glfwGetTime();
 
     // ---- Render loop -------------------------------------------------------
     float lastFrame = static_cast<float>(glfwGetTime());
@@ -3840,6 +4138,17 @@ int main(int argc, char** argv)
         float now = static_cast<float>(glfwGetTime());
         float deltaTime = now - lastFrame;
         lastFrame = now;
+        if (gCaptureFreeze) deltaTime = 0.0f;
+
+        if (gDemoActive)
+        {
+            if (gDemoFrame >= gDemoEnd) break;
+            deltaTime = 1.0f / gDemoFps;
+            const float prevTime = gDemoTime;
+            gDemoTime = static_cast<float>(gDemoFrame + 1) / gDemoFps;
+            now = gDemoTime;
+            demoFireEvents(window, (gDemoFrame == 0) ? -1.0f : prevTime, gDemoTime);
+        }
 
         if (gReelActive)
         {
@@ -3852,38 +4161,34 @@ int main(int argc, char** argv)
             reelFireEvents(prevTime, gReelTime);
             reelApplyCamera(gReelTime);
 
-            // ---- fast-forward ------------------------------------------
-            //
-            //  The reel can be recorded in chunks.  A chunk that starts
-            //  part-way through must still have the service sequence in
-            //  exactly the state continuous playback would have put it in,
-            //  so the simulation is advanced for every earlier frame - but
-            //  nothing is rendered or written, which makes the warm-up cost
-            //  a few milliseconds per frame instead of forty.
             if (gReelFrame < gReelStart)
             {
-                updateServiceAutomation(deltaTime * gServiceSpeed);
-                gFanAngle += 95.0f * gSwitches.fanSpeed * deltaTime;
-                updateCarDrive(deltaTime);
-                Scene::setSwitches(gSwitches);
-                gDoorOffset = moveToward(gDoorOffset, gDoorTarget, kDoorSpeed * deltaTime);
-                const float lc = clampf(moveToward(gLiftHeight, gLiftTarget, kLiftSpeed * deltaTime),
-                                        0.0f, 3.80f);
-                if (liftPositionSafe(lc)) gLiftHeight = lc;
+                advanceSimulation(deltaTime);
                 ++gReelFrame;
                 glfwPollEvents();
                 continue;
             }
         }
 
-        processDiscreteInput(window);
-        processMovement(window, deltaTime);
+        if (!gInputLocked)
+        {
+            processDiscreteInput(window);
+            processMovement(window, deltaTime);
+        }
+        else if (gDemoActive)
+        {
+            processMovement(window, deltaTime);   // the script's held keys
+            static float lastStop = -10.0f;
+            if (gSafetyStop && gDemoTime - lastStop > 0.5f)
+            {
+                std::printf("[Demo] SAFETY STOP t=%.2f  yaw %.1f j1 %.1f j2 %.1f wrist %.1f lift %.2f\n", gDemoTime, gRobotBaseYaw, gJoint1Angle, gJoint2Angle, gWristPitch, gLiftHeight);
+                lastStop = gDemoTime;
+            }
+        }
         updateServiceAutomation(deltaTime * gServiceSpeed);
         updateTeachingWindowTitle(window);
 
         // ---- SECTION I: interactive motion ---------------------------
-        gFanAngle += 95.0f * gSwitches.fanSpeed * deltaTime;
-        if (gFanAngle > 360.0f) gFanAngle = std::fmod(gFanAngle, 360.0f);
         updateCarDrive(deltaTime);
         if (gSwitches.hazardBeacon)
             gServiceVisual.warningPulse = 0.35f + 0.65f * (0.5f + 0.5f * std::sin(now * 7.5f));
@@ -3901,6 +4206,14 @@ int main(int argc, char** argv)
             gSafetyStop = true;
         }
 
+        if (gDemoActive)
+        {
+            demoApplyCamera(gDemoTime);
+            // Fast-forward to the first frame of this chunk: the simulation and
+            // the script run, nothing is drawn or written.
+            if (gDemoFrame < gDemoStart) { ++gDemoFrame; glfwPollEvents(); continue; }
+        }
+
         if (!ensureHDRTargets(hdr, gWidth, gHeight))
         {
             glfwPollEvents();
@@ -3916,9 +4229,6 @@ int main(int argc, char** argv)
             gFrameMsCount = 0;
         }
 
-        // The subject is the vehicle on the lift.  The studio rig and the
-        // showcase camera are both built around it, so raising the lift
-        // carries the lighting and the orbit up with the car.
         const Vec3 subject(0.0f, Scene::liftTopY(gLiftHeight) + 0.95f, -2.00f);
         updateShowcaseCamera(deltaTime, subject);
 
@@ -3936,9 +4246,6 @@ int main(int argc, char** argv)
             : 1.0f;
         Mat4 view = gCamera.viewMatrix();
 
-        // Matching the two projections at the subject's distance means the
-        // vehicle stays the same size on screen when you switch, so what you
-        // see change is the PROJECTION and nothing else.
         Mat4 projection;
         if (gOrthographic)
         {
@@ -3963,9 +4270,9 @@ int main(int argc, char** argv)
         const Vec3 spotDirection = normalize(sToolEnd - sWrist);
         const Mat4 spotSpace = buildSpotLightMatrix(sToolEnd, spotDirection, 23.0f);
 
-        // -----------------------------------------------------------------
-        // 1) Directional shadow depth pass.
-        // -----------------------------------------------------------------
+        // Ray-traced inspection monitor (own pass; restores GL state).
+        rtRender();
+
         if (gShadowsEnabled)
         {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // wireframe must not punch holes in shadows
@@ -3987,13 +4294,11 @@ int main(int argc, char** argv)
             drawCurrentContent();
         }
 
-        // -----------------------------------------------------------------
-        // 2) HDR scene pass (two MRT outputs: full scene + bloom bright pass).
-        // -----------------------------------------------------------------
         const bool useMsaa = gMsaaEnabled && hdr.msReady;
         glBindFramebuffer(GL_FRAMEBUFFER, useMsaa ? hdr.msFbo : hdr.fbo);
         glViewport(0, 0, gWidth, gHeight);
-        glClearColor(0.012f, 0.015f, 0.022f, 1.0f);
+        const float* sky = gClearOverride ? gClearColor : (gNight ? kSkyNight : kSkyDay);
+        glClearColor(sky[0], sky[1], sky[2], 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
         glUseProgram(shaderProgram);
@@ -4008,21 +4313,16 @@ int main(int argc, char** argv)
         glActiveTexture(GL_TEXTURE0);
         Primitives::resetDrawCallCounter();
         drawCurrentContent();
+        rtDrawScreen(view, projection);
 
         // Resolve the multisampled scene into the textures the post chain reads.
         if (useMsaa) resolveMultisample(hdr);
 
-        // -----------------------------------------------------------------
-        // 3) Separable Gaussian bloom on the bright-pass target.
-        // -----------------------------------------------------------------
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glDisable(GL_DEPTH_TEST);
         unsigned int bloomTexture = 0;
         if (gBloomEnabled)
         {
-            // Downsample the bright pass into the half-resolution chain first.
-            // A linear blit is a free 2x2 box filter and it also removes the
-            // single-pixel fireflies that would otherwise flicker in the glow.
             glBindFramebuffer(GL_READ_FRAMEBUFFER, hdr.fbo);
             glReadBuffer(GL_COLOR_ATTACHMENT1);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, hdr.pingFbo[0]);
@@ -4035,9 +4335,6 @@ int main(int argc, char** argv)
             glUniform1i(glGetUniformLocation(blurProgram, "uImage"), 0);
             glUniform1f(glGetUniformLocation(blurProgram, "uRadiusScale"), 1.35f);
 
-            // Six ping-pong passes at half resolution give a wider, smoother
-            // glow than the old eight full-resolution passes, for about a
-            // fifth of the fill cost.
             bool horizontal = true;
             const int passes = 6;
             for (int i = 0; i < passes; ++i)
@@ -4055,10 +4352,7 @@ int main(int argc, char** argv)
             }
         }
 
-        // -----------------------------------------------------------------
-        // 4) Final tone-map + gamma correction to the window framebuffer.
-        // -----------------------------------------------------------------
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, gOutFbo);
         glViewport(0, 0, gWidth, gHeight);
         glClear(GL_COLOR_BUFFER_BIT);
         glUseProgram(postProgram);
@@ -4084,14 +4378,27 @@ int main(int argc, char** argv)
         glActiveTexture(GL_TEXTURE0);
         glEnable(GL_DEPTH_TEST);
         glPolygonMode(GL_FRONT_AND_BACK, gWireframe ? GL_LINE : GL_FILL);
+        rtDrawOverlay();
 
-        // Offline capture: let the scene settle for a few frames, then write
-        // the image out and close.  The read has to happen BEFORE the buffer
-        // swap, while the finished frame is still in the back buffer.
         if (captureCountdown > 0 && --captureCountdown == 0)
         {
+            { int cl = 0, cc = 0, cr = 0; Scene::lastRecordCounts(cl, cc, cr);
+              std::printf("[RayTrace] items %d (triangles %d; lift %d, car+wheels %d, robot %d), chunks %d, trace %.2f ms (GPU-synchronised)\n", gRt.itemCount, gRt.triCount, cl, cc, cr, gRt.chunkCount, gRt.traceMs); }
             saveScreenshotBMP(gCapturePath.c_str(), gWidth, gHeight);
             glfwSetWindowShouldClose(window, GLFW_TRUE);
+        }
+
+        if (gDemoActive)
+        {
+            demoWriteFrame(demoWritten++);
+            ++gDemoFrame;
+            if (demoWritten % 60 == 0)
+            {
+                const double el = glfwGetTime() - demoClock0;
+                std::printf("[Demo] frame %d / %d  t=%.2f s  %.1f ms/frame  state %d\n", gDemoFrame, gDemoEnd, gDemoTime,
+                            1000.0 * el / demoWritten, static_cast<int>(gServiceState));
+                std::fflush(stdout);
+            }
         }
 
         if (gReelActive)
@@ -4106,6 +4413,12 @@ int main(int argc, char** argv)
         glfwPollEvents();
     }
 
+    if (gDemoActive)
+    {
+        demoClosePipe(demoWritten);
+        std::printf("[Demo] wrote %d frames in %.1f s\n", demoWritten, glfwGetTime() - demoClock0);
+    }
+    rtDestroy();
     Primitives::destroy();
     destroyHDRTargets(hdr);
     if (gSpotShadow.depth) glDeleteTextures(1, &gSpotShadow.depth);

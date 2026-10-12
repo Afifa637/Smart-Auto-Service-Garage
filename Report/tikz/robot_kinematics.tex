@@ -1,0 +1,24 @@
+% Planar chain in the turntable frame for pose (gamma, th1, th2, omega) = (0, -30, -60, 90), scanner fitted.
+\begin{tikzpicture}[x=0.62cm, y=0.62cm, font=\small]
+  \draw[-{Stealth}] (-1.0,0) -- (7.4,0) node[right]{$r$};
+  \draw[-{Stealth}] (0,-0.2) -- (0,6.4) node[above]{$y$};
+  \fill[gray!35] (-0.85,0) rectangle (0.85,0.8);
+  \coordinate (S) at (0,1.05);
+  \coordinate (E) at (2.25,4.947);
+  \coordinate (W) at (6.25,4.947);
+  \coordinate (T) at (6.25,4.017);
+  \draw[line width=3pt, gray!70] (S) -- (E);
+  \draw[line width=2.6pt, gray!55] (E) -- (W);
+  \draw[line width=2pt, smamber!70!black] (W) -- (T);
+  \foreach \p in {S,E,W} \fill[smamber!70!black] (\p) circle (2.8pt);
+  \fill[smamber!70!black] (T) circle (2.4pt);
+  \node[below right=-1pt] at (S) {$(0,\,1.05)$};
+  \node[above left] at (E) {$(2.25,\,4.947)$};
+  \node[above] at ($(W)+(0,0.05)$) {$(6.25,\,4.947)$};
+  \node[below] at ($(T)+(0,-0.05)$) {$(6.25,\,4.017)$};
+  \draw[dashed, gray] (S) -- ++(0,2.4);
+  \draw ($(S)+(0,1.6)$) arc (90:60:1.6);
+  \node at ($(S)+(0.45,2.15)$) {$\theta_1$};
+  \node[above] at ($(E)!0.5!(W)$) {$L_2$};
+  \node[right=2pt] at ($(S)!0.5!(E)$) {$L_1$};
+\end{tikzpicture}

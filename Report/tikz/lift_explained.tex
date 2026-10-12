@@ -1,0 +1,85 @@
+% scissor lift at three heights, drawn to scale from scissorAngle(): side view (z horizontal, y vertical)
+\begin{tikzpicture}[x=0.52cm,y=0.52cm,font=\footnotesize]
+\begin{scope}[shift={(0.00,0)}]
+\draw[gray] (-3.0,0) -- (3.0,0);
+\fill[smsteel!40] (-2.1,0) rectangle (2.1,0.220);
+\draw[line width=2.6pt,smcyan!80!black] (-1.644,0.220) -- (1.644,0.510);
+\draw[line width=2.6pt,smcyan!55!black] (1.644,0.220) -- (-1.644,0.510);
+\fill[white,draw=black] (0,0.365) circle (2.5pt);
+\fill[black] (-1.644,0.220) circle (1.6pt);
+\fill[black] (-1.644,0.510) circle (1.6pt);
+\fill[black] (1.644,0.220) circle (1.6pt);
+\fill[black] (1.644,0.510) circle (1.6pt);
+\draw[line width=2.6pt,smcyan!80!black] (-1.644,0.510) -- (1.644,0.800);
+\draw[line width=2.6pt,smcyan!55!black] (1.644,0.510) -- (-1.644,0.800);
+\fill[white,draw=black] (0,0.655) circle (2.5pt);
+\fill[black] (-1.644,0.510) circle (1.6pt);
+\fill[black] (-1.644,0.800) circle (1.6pt);
+\fill[black] (1.644,0.510) circle (1.6pt);
+\fill[black] (1.644,0.800) circle (1.6pt);
+\fill[smamber] (-1.644,0.220) circle (3pt);
+\draw[smamber!70!black,fill=white,line width=1pt] (1.644,0.220) circle (3pt);
+\draw[dashed,line width=1.2pt,smamber!70!black] (-1.479,0.234) -- (0.394,0.400);
+\fill[smcyan!70!black] (-2.6,0.800) rectangle (2.6,0.980);
+\fill[smamber] (-2.6,0.980) rectangle (2.6,1.080);
+\node[below] at (0,-1.45) {$h=0.00$\,m,\ $\theta=5.04^\circ$};
+\node[right] at (2.7,1.000) {top $1.08$};
+\end{scope}
+\begin{scope}[shift={(7.20,0)}]
+\draw[gray] (-3.0,0) -- (3.0,0);
+\fill[smsteel!40] (-2.1,0) rectangle (2.1,0.220);
+\draw[line width=2.6pt,smcyan!80!black] (-1.596,0.220) -- (1.596,1.060);
+\draw[line width=2.6pt,smcyan!55!black] (1.596,0.220) -- (-1.596,1.060);
+\fill[white,draw=black] (0,0.640) circle (2.5pt);
+\fill[black] (-1.596,0.220) circle (1.6pt);
+\fill[black] (-1.596,1.060) circle (1.6pt);
+\fill[black] (1.596,0.220) circle (1.6pt);
+\fill[black] (1.596,1.060) circle (1.6pt);
+\draw[line width=2.6pt,smcyan!80!black] (-1.596,1.060) -- (1.596,1.900);
+\draw[line width=2.6pt,smcyan!55!black] (1.596,1.060) -- (-1.596,1.900);
+\fill[white,draw=black] (0,1.480) circle (2.5pt);
+\fill[black] (-1.596,1.060) circle (1.6pt);
+\fill[black] (-1.596,1.900) circle (1.6pt);
+\fill[black] (1.596,1.060) circle (1.6pt);
+\fill[black] (1.596,1.900) circle (1.6pt);
+\fill[smamber] (-1.596,0.220) circle (3pt);
+\draw[smamber!70!black,fill=white,line width=1pt] (1.596,0.220) circle (3pt);
+\draw[dashed,line width=1.2pt,smamber!70!black] (-1.436,0.262) -- (0.383,0.741);
+\fill[smcyan!70!black] (-2.6,1.900) rectangle (2.6,2.080);
+\fill[smamber] (-2.6,2.080) rectangle (2.6,2.180);
+\node[below] at (0,-1.45) {$h=1.10$\,m,\ $\theta=14.75^\circ$};
+\node[right] at (2.7,2.100) {top $2.18$};
+\draw[-{Stealth}] (-0.696,0.220) arc (0:14.75:0.9);
+\node at (-0.246,0.600) {$\theta$};
+\node[above left] at (-1.098,0.875) {$L$};
+\draw[<->] (2.146,0.220) -- (2.146,1.060) node[midway,right] {$L\sin\theta$};
+\draw[<->] (-1.596,-0.80) -- (1.596,-0.80) node[midway,below] {$L\cos\theta$};
+\node[smamber!60!black,below] at (-1.596,0.000) {fixed};
+\node[smamber!60!black,below] at (1.596,0.000) {roller};
+\end{scope}
+\begin{scope}[shift={(14.40,0)}]
+\draw[gray] (-3.0,0) -- (3.0,0);
+\fill[smsteel!40] (-2.1,0) rectangle (2.1,0.220);
+\draw[line width=2.6pt,smcyan!80!black] (-1.353,0.220) -- (1.353,2.110);
+\draw[line width=2.6pt,smcyan!55!black] (1.353,0.220) -- (-1.353,2.110);
+\fill[white,draw=black] (0,1.165) circle (2.5pt);
+\fill[black] (-1.353,0.220) circle (1.6pt);
+\fill[black] (-1.353,2.110) circle (1.6pt);
+\fill[black] (1.353,0.220) circle (1.6pt);
+\fill[black] (1.353,2.110) circle (1.6pt);
+\draw[line width=2.6pt,smcyan!80!black] (-1.353,2.110) -- (1.353,4.000);
+\draw[line width=2.6pt,smcyan!55!black] (1.353,2.110) -- (-1.353,4.000);
+\fill[white,draw=black] (0,3.055) circle (2.5pt);
+\fill[black] (-1.353,2.110) circle (1.6pt);
+\fill[black] (-1.353,4.000) circle (1.6pt);
+\fill[black] (1.353,2.110) circle (1.6pt);
+\fill[black] (1.353,4.000) circle (1.6pt);
+\fill[smamber] (-1.353,0.220) circle (3pt);
+\draw[smamber!70!black,fill=white,line width=1pt] (1.353,0.220) circle (3pt);
+\draw[dashed,line width=1.2pt,smamber!70!black] (-1.217,0.315) -- (0.325,1.392);
+\fill[smcyan!70!black] (-2.6,4.000) rectangle (2.6,4.180);
+\fill[smamber] (-2.6,4.180) rectangle (2.6,4.280);
+\node[below] at (0,-1.45) {$h=3.20$\,m,\ $\theta=34.94^\circ$};
+\node[right] at (2.7,4.200) {top $4.28$};
+\end{scope}
+\end{tikzpicture}

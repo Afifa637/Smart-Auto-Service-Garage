@@ -1,0 +1,32 @@
+% ServiceState sequence from updateServiceAutomation(); start times measured with --simtime (speed 1.0).
+\begin{tikzpicture}[
+  font=\small,
+  st/.style={draw, rounded corners=3pt, fill=gray!8, minimum height=9mm,
+             text width=29mm, align=center, inner sep=1.5pt},
+  tc/.style={st, fill=smcyan!18},
+  arr/.style={-{Stealth[length=1.8mm]}, thick}]
+  \def\dx{3.5}
+  \node[st, fill=smamber!22] (s0) at (0,0)        {IDLE\\ (ENTER pressed)};
+  \node[st] (s1) at (1*\dx,0)  {DOOR\_OPEN\_IN\\ 0.00 s};
+  \node[st] (s2) at (2*\dx,0)  {DRIVE\_IN\\ 6.08 s};
+  \node[st] (s3) at (3*\dx,0)  {DOOR\_CLOSE\\ 17.00 s};
+  \node[st] (s4) at (4*\dx,0)  {LIFT\_UP\\ 23.12 s};
+  \node[st] (s5) at (4*\dx,-1.7) {SCAN (24 phases)\\ 25.12 s};
+  \node[tc] (s6) at (3*\dx,-1.7) {GET\_SPONGE\\ 72.33 s};
+  \node[st] (s7) at (2*\dx,-1.7) {CLEAN\\ 82.50 s};
+  \node[st] (s8) at (1*\dx,-1.7) {RETURN\_SPONGE\\ 92.17 s};
+  \node[tc] (s9) at (0,-1.7)     {GET\_POLISHER\\ 97.21 s};
+  \node[st] (s10) at (0,-3.4)      {POLISH\\ 102.96 s};
+  \node[tc] (s11) at (1*\dx,-3.4)  {GET\_DRIVER\\ 135.96 s};
+  \node[st] (s12) at (2*\dx,-3.4)  {WHEEL\_TIGHTEN\\ 148.33 s};
+  \node[tc] (s13) at (3*\dx,-3.4)  {RETURN\_DRIVER\\ 161.75 s};
+  \node[st] (s14) at (4*\dx,-3.4)  {ROBOT\_HOME\\ 169.79 s};
+  \node[st] (s15) at (4*\dx,-5.1)  {LIFT\_DOWN\\ 178.67 s};
+  \node[st] (s16) at (3*\dx,-5.1)  {DOOR\_OPEN\\ 180.67 s};
+  \node[st] (s17) at (2*\dx,-5.1)  {DRIVE\_OUT\\ 186.79 s};
+  \node[st, fill=smamber!22] (s18) at (1*\dx,-5.1) {COMPLETE\\ 197.71 s};
+  \foreach \a/\b in {s0/s1,s1/s2,s2/s3,s3/s4,s4/s5,s5/s6,s6/s7,s7/s8,s8/s9,s9/s10,s10/s11,s11/s12,s12/s13,s13/s14,s14/s15,s15/s16,s16/s17,s17/s18}
+     \draw[arr] (\a) -- (\b);
+  \draw[arr, dashed] (s18.south) -- ++(0,-0.55) -| node[pos=0.25, below]{ENTER: reset and restart}
+        ($(s0.west)+(-0.6,0)$) -- (s0.west);
+\end{tikzpicture}

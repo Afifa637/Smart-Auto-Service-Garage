@@ -13,4 +13,9 @@ unsigned int createDepthShaderProgram();
 unsigned int createBlurShaderProgram();
 unsigned int createPostShaderProgram();
 
+// Ray-traced inspection monitor: tracing pass, in-world screen, enlarged overlay.
+unsigned int createRayTraceShaderProgram();
+unsigned int createMonitorShaderProgram();
+unsigned int createBlitShaderProgram();
+
 #endif // SHADER_H

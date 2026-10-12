@@ -1,23 +1,6 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 
-// ============================================================================
-//  Camera.h  -  A small "fly" camera so the garage can be inspected.
-// ============================================================================
-//
-//  The camera is described by three numbers:
-//
-//      position  - where the eye is in world space
-//      yaw       - left/right turn, in degrees
-//      pitch     - up/down tilt, in degrees
-//
-//  From yaw and pitch we compute a FORWARD vector. The RIGHT vector is then
-//  forward x worldUp, and moving with WASD is just adding those vectors to
-//  the position. Finally lookAt() turns all of this into the view matrix.
-//
-//  Header-only, no dependencies beyond Math3D.h.
-// ============================================================================
-
 #include "Math3D.h"
 
 struct Camera

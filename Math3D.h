@@ -1,40 +1,6 @@
 #ifndef MATH3D_H
 #define MATH3D_H
 
-// ============================================================================
-//  Math3D.h  -  A very small 3D math library written by hand.
-// ============================================================================
-//
-//  WHY DOES THIS FILE EXIST?
-//  -------------------------
-//  Most OpenGL tutorials use a library called GLM for vectors and matrices.
-//  Our project does NOT ship GLM, and adding a new library was not allowed,
-//  so this header implements only the handful of operations we actually need:
-//
-//      Vec3   - a 3D vector  (positions, sizes, colours, directions)
-//      Mat4   - a 4x4 matrix (model / view / projection transformations)
-//      Mat3   - a 3x3 matrix (used only to transform normals correctly)
-//
-//  It is header-only: there is no Math3D.cpp, every function is `inline`.
-//  Nothing here needs OpenGL, so this file can be read and understood on
-//  its own.
-//
-//  IMPORTANT - MATRIX STORAGE ORDER
-//  --------------------------------
-//  OpenGL expects matrices in COLUMN-MAJOR order. That means the 16 floats
-//  are stored column by column, not row by row:
-//
-//        m[0]  m[4]  m[8]   m[12]        row 0
-//        m[1]  m[5]  m[9]   m[13]        row 1
-//        m[2]  m[6]  m[10]  m[14]        row 2
-//        m[3]  m[7]  m[11]  m[15]        row 3
-//
-//  The rule is:   m[ column * 4 + row ]
-//
-//  Because we already store them the way OpenGL wants, we can upload them
-//  with glUniformMatrix4fv(..., GL_FALSE, ...)  (GL_FALSE = "do not transpose").
-// ============================================================================
-
 #include <cmath>
 
 // Pi. We define it ourselves because M_PI is not guaranteed by the C++ standard
@@ -44,12 +10,6 @@ const float PI_F = 3.14159265358979323846f;
 // Degrees are friendlier to type; the trig functions need radians.
 inline float radians(float degrees) { return degrees * PI_F / 180.0f; }
 
-
-// ----------------------------------------------------------------------------
-//  Vec3 - three floats that we reuse for three different meanings:
-//         a POSITION (x, y, z), a SIZE (width, height, depth),
-//         or a COLOUR (red, green, blue).
-// ----------------------------------------------------------------------------
 struct Vec3
 {
     float x, y, z;
@@ -87,25 +47,15 @@ inline Vec3 normalize(const Vec3& a)
     return a * (1.0f / len);
 }
 
-
-// ----------------------------------------------------------------------------
-//  Mat3 - only used to send the "normal matrix" to the shader so that
-//         lighting still looks right after non-uniform scaling.
-// ----------------------------------------------------------------------------
 struct Mat3
 {
     float m[9];   // column-major:  m[col * 3 + row]
 };
 
-
-// ----------------------------------------------------------------------------
-//  Mat4 - the 4x4 transformation matrix.
-// ----------------------------------------------------------------------------
 struct Mat4
 {
     float m[16];  // column-major:  m[col * 4 + row]
 };
-
 
 // Identity matrix: "do nothing". Multiplying by it leaves a point unchanged.
 inline Mat4 mat4Identity()
@@ -116,11 +66,6 @@ inline Mat4 mat4Identity()
     return r;
 }
 
-
-// Matrix multiplication.  C = A * B
-//
-// Read it right-to-left: the transformation in B happens FIRST, then A.
-// So  translate * rotate * scale  means:  scale first, then rotate, then move.
 inline Mat4 operator*(const Mat4& A, const Mat4& B)
 {
     Mat4 C;
@@ -137,13 +82,6 @@ inline Mat4 operator*(const Mat4& A, const Mat4& B)
     return C;
 }
 
-
-// TRANSLATION - slides an object to a new position without changing its shape.
-//
-//     | 1  0  0  tx |
-//     | 0  1  0  ty |
-//     | 0  0  1  tz |
-//     | 0  0  0   1 |
 inline Mat4 translate(float tx, float ty, float tz)
 {
     Mat4 r = mat4Identity();
@@ -154,15 +92,6 @@ inline Mat4 translate(float tx, float ty, float tz)
 }
 inline Mat4 translate(const Vec3& t) { return translate(t.x, t.y, t.z); }
 
-
-// SCALING - stretches the object along each axis.
-// This is the operation that turns our 1x1x1 cube into a long car body,
-// a thin window, a tall wall, or a flat floor.
-//
-//     | sx  0  0  0 |
-//     |  0 sy  0  0 |
-//     |  0  0 sz  0 |
-//     |  0  0  0  1 |
 inline Mat4 scale(float sx, float sy, float sz)
 {
     Mat4 r = mat4Identity();
@@ -172,7 +101,6 @@ inline Mat4 scale(float sx, float sy, float sz)
     return r;
 }
 inline Mat4 scale(const Vec3& s) { return scale(s.x, s.y, s.z); }
-
 
 // ROTATION about the X axis (object tips forward / backward, like a windshield).
 inline Mat4 rotateX(float degrees)
@@ -213,14 +141,6 @@ inline Mat4 rotateZ(float degrees)
     return r;
 }
 
-
-// PERSPECTIVE PROJECTION
-// Objects that are farther from the camera are drawn smaller. This is what
-// makes the scene look genuinely 3D instead of flat.
-//
-//   fovYDegrees - vertical field of view (how "wide" the lens is)
-//   aspect      - window width / window height
-//   zNear/zFar  - the closest and farthest distances that get drawn
 inline Mat4 perspective(float fovYDegrees, float aspect, float zNear, float zFar)
 {
     float f = 1.0f / std::tan(radians(fovYDegrees) * 0.5f);
@@ -235,9 +155,6 @@ inline Mat4 perspective(float fovYDegrees, float aspect, float zNear, float zFar
     r.m[14] = (2.0f * zFar * zNear) / (zNear - zFar);
     return r;
 }
-
-
-
 
 // ORTHOGRAPHIC PROJECTION - used by the directional-light shadow map.
 inline Mat4 orthographic(float left, float right, float bottom, float top, float zNear, float zFar)
@@ -269,10 +186,6 @@ inline Vec3 transformDirection(const Mat4& m, const Vec3& d)
         m.m[2] * d.x + m.m[6] * d.y + m.m[10] * d.z);
 }
 
-// VIEW MATRIX ("look at")
-// The view matrix moves the whole world so that the camera ends up at the
-// origin looking down the -Z axis. Moving the camera right is the same as
-// moving the world left - that is all this matrix does.
 inline Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up)
 {
     Vec3 f = normalize(center - eye);   // forward
@@ -287,17 +200,6 @@ inline Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up)
     return r;
 }
 
-
-// NORMAL MATRIX
-// ------------------------------------------------------------------
-// A surface normal is a direction, not a position. If we scale a cube
-// non-uniformly (for example 4.2 long but only 0.5 tall, like the car body)
-// and then transform the normal with the same matrix, the normal comes out
-// pointing in the wrong direction and the shading looks wrong.
-//
-// The correct matrix for normals is the inverse-transpose of the upper-left
-// 3x3 part of the model matrix. That is exactly what this function builds.
-// ------------------------------------------------------------------
 inline Mat3 normalMatrix(const Mat4& model)
 {
     // Pull out the upper-left 3x3 block (remember: m[col * 4 + row]).
@@ -334,9 +236,6 @@ inline Mat3 normalMatrix(const Mat4& model)
     float b21 = -(a00 * a21 - a01 * a20) * invDet;
     float b22 = (a00 * a11 - a01 * a10) * invDet;
 
-    // We now need the TRANSPOSE of B stored in COLUMN-major order.
-    // Transposing and switching row-major -> column-major cancel each other
-    // out, so we can simply store B row by row.
     r.m[0] = b00; r.m[1] = b01; r.m[2] = b02;
     r.m[3] = b10; r.m[4] = b11; r.m[5] = b12;
     r.m[6] = b20; r.m[7] = b21; r.m[8] = b22;

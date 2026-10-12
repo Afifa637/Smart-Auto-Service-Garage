@@ -1,0 +1,23 @@
+% Roller-shutter geometry (side view, y up, z right): panel travel, drum radius, winding angle.
+\begin{tikzpicture}[x=1.0cm, y=1.0cm, font=\small]
+  % opening 0..4.9 drawn at 0.62 scale
+  \def\sc{0.62}
+  \draw[thick] (0,0) -- (0,4.9*\sc);
+  \fill[gray!25] (-0.3,-0.12) rectangle (3.4,0);
+  \foreach \i in {0,1,2}{
+    \pgfmathsetmacro{\yy}{0.98*(0.5+\i)*\sc}
+    \draw[fill=smcyan!15] (-0.06,\yy-0.46*\sc) rectangle (0.06,\yy+0.46*\sc);}
+  \node[left] at (0,2.45*\sc) {opening $H=4.90$};
+  \node[below] at (0.5,-0.1) {5 panels $\times$ 0.98};
+  % drum
+  \pgfmathsetmacro{\dy}{(4.9+0.95)*\sc}
+  \draw[fill=gray!20] (0.9,\dy) circle (0.52*\sc*2);
+  \fill (0.9,\dy) circle (1.4pt);
+  \draw[dashed] (0.9,\dy) -- ++(0.52*\sc*2,0);
+  \draw[smamber!70!black, thick] (0.9,\dy) ++(0.52*\sc*2,0) arc (0:162:0.52*\sc*2);
+  \node[smamber!70!black] at (0.9,\dy-0.15) {$\alpha$};
+  \node[right] at (2.5,\dy+0.5) {drum $R=0.52$, centre $y=5.85$};
+  \node[right, align=left] at (2.5,\dy-0.55) {$\alpha=\dfrac{\text{over}}{R}$, over $=0.98(0.5{+}i)+d-4.9$\\[2pt]
+     $r=R+0.095\,\dfrac{\alpha}{2\pi}$};
+  \node[right, align=left, font=\footnotesize] at (2.5,1.3) {$d=4.9$: panel 4 over $=4.41$\\ $\alpha=485.9^\circ$, $r=0.648$};
+\end{tikzpicture}

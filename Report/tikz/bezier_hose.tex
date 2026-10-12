@@ -1,0 +1,23 @@
+% Control polygon and curve of hydraulic hose 0 (top view, local x-z), values from drawLiftHydraulicHose().
+\begin{tikzpicture}[x=2.6cm, y=2.6cm, font=\small]
+  \coordinate (P0) at (0.20,-0.160);
+  \coordinate (P1) at (1.05,-0.887);
+  \coordinate (P2) at (2.20,-0.887);
+  \coordinate (P3) at (3.05,-0.160);
+  \draw[gray, dashed] (P0) -- (P1) -- (P2) -- (P3);
+  \draw[very thick, smcyan!50!black] (P0) .. controls (P1) and (P2) .. (P3);
+  \foreach \t in {0.0714,0.1429,0.2143,0.2857,0.3571,0.4286,0.5,0.5714,0.6429,0.7143,0.7857,0.8571,0.9286}{
+    \pgfmathsetmacro{\u}{1-\t}
+    \pgfmathsetmacro{\bx}{\u^3*0.20+3*\u^2*\t*1.05+3*\u*\t^2*2.20+\t^3*3.05}
+    \pgfmathsetmacro{\bz}{\u^3*(-0.16)+3*\u^2*\t*(-0.887)+3*\u*\t^2*(-0.887)+\t^3*(-0.16)}
+    \fill[smcyan!50!black] (\bx,\bz) circle (0.9pt);}
+  \fill (P0) circle (1.6pt) node[above left]{$P_0$ (0.20, 0.236, $-$0.16)};
+  \fill (P1) circle (1.6pt) node[below]{$P_1$ (1.05, 0.09, $-$0.887)};
+  \fill (P2) circle (1.6pt) node[below]{$P_2$ (2.20, 0.07, $-$0.887)};
+  \fill (P3) circle (1.6pt) node[above right]{$P_3$ (3.05, 0.14, $-$0.16)};
+  \fill[smamber!70!black] (1.625,-0.705) circle (1.8pt);
+  \draw[-{Stealth}, smamber!70!black, thick] (1.625,-0.705) -- ++(0.5,0) node[right]{$B'(0.5)\parallel{+}x$};
+  \node[above, smamber!70!black] at (1.625,-0.62) {$B(0.5)=(1.625,\,0.107,\,-0.705)$};
+  \draw[-{Stealth}] (-0.05,0.05) -- (0.3,0.05) node[right]{$x$};
+  \draw[-{Stealth}] (-0.05,0.05) -- (-0.05,-0.30) node[below]{$z$};
+\end{tikzpicture}

@@ -1,0 +1,33 @@
+% Parent-child transformation trees (drawScene / drawCar / drawRobotArm); edge labels = controlling variable.
+\begin{tikzpicture}[font=\footnotesize,
+  n/.style={draw, rounded corners=2pt, fill=gray!8, inner sep=2pt, align=center},
+  v/.style={font=\scriptsize\ttfamily, text=smcyan!50!black},
+  arr/.style={-{Stealth[length=1.5mm]}}]
+  % ---------------- vehicle
+  \node[n, fill=smamber!22] (W) at (0,0) {World};
+  \node[n] (C) at (0,-1.1) {Vehicle $M_{\text{car}}$};
+  \draw[arr] (W) -- node[v, right]{carDrive, liftHeight, carYaw} (C);
+  \node[n] (S) at (-2.6,-2.3) {13 shell batches\\(skin, hood, glass\dots)};
+  \node[n] (L) at (0,-2.3) {light bar +\\2 headlight lights};
+  \node[n] (Wh) at (2.6,-2.3) {4 wheels\\$T R_z(90) R_y(\phi)$};
+  \node[n] (Lg) at (2.6,-3.5) {5 lug nuts (FL)};
+  \draw[arr] (C) -- (S); \draw[arr] (C) -- node[v, left, pos=0.55]{vehicleLights} (L);
+  \draw[arr] (C) -- node[v, above right, pos=0.75]{wheelSpin} (Wh); \draw[arr] (Wh) -- node[v, right]{lugProgress} (Lg);
+  % ---------------- robot
+  \node[n] (B) at (7.0,0) {Base $T(-4.6,0,-2.2)$};
+  \node[n] (Tt) at (7.0,-0.85) {Turntable $R_y(\gamma)$};
+  \node[n] (Sh) at (7.0,-1.7) {Shoulder $T(0,1.05,0)R_z(\theta_1)$};
+  \node[n] (El) at (7.0,-2.55) {Elbow $T(0,4.5,0)R_z(\theta_2)$};
+  \node[n] (Wr) at (7.0,-3.4) {Wrist $T(0,4,0)R_z(\omega)R_y(\rho)$};
+  \node[n] (To) at (7.0,-4.25) {Tool $T(0,-0.16,0)$ $\to$ sponge};
+  \draw[arr] (W) -- (B);
+  \draw[arr] (B) -- node[v, right]{gRobotBaseYaw} (Tt);
+  \draw[arr] (Tt) -- node[v, right]{gJoint1Angle} (Sh);
+  \draw[arr] (Sh) -- node[v, right]{gJoint2Angle} (El);
+  \draw[arr] (El) -- node[v, right]{gWristPitch, gWristRoll} (Wr);
+  \draw[arr] (Wr) -- node[v, right]{gRobotTool} (To);
+  % ---------------- lift
+  \node[n] (Li) at (-5.8,-1.1) {Lift $T(0,0,-2)$};
+  \node[n] (Sc) at (-5.8,-2.3) {scissor arms $R_x(\pm\theta(h))$\\runways at $1.08+h$};
+  \draw[arr] (W) -- (Li); \draw[arr] (Li) -- node[v, left]{liftHeight} (Sc);
+\end{tikzpicture}

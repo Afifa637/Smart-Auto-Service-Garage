@@ -1,0 +1,21 @@
+% Side profile (z horizontal, y vertical) of the approach ramp with the vehicle's two axles at carZ = 3.0 m.
+\begin{tikzpicture}[x=1.45cm, y=1.45cm, font=\small]
+  \def\zt{0.6} \def\zf{5.2} \def\top{1.08}
+  \fill[gray!25] (-0.4,-0.12) rectangle (6.0,0);
+  \fill[yellow!45!smamber!60] (-0.4,\top-0.05) rectangle (\zt,\top);
+  \draw[line width=2.2pt, yellow!50!orange] (\zt,\top) -- (\zf,0);
+  \draw[dashed, gray] (\zt,\top) -- (\zt,0) node[below]{$z_{\text{top}}=0.60$};
+  \draw[dashed, gray] (\zf,\top) -- (\zf,0) node[below]{$z_{\text{foot}}=5.20$};
+  \draw[dashed, gray] (\zt,\top) -- (\zf,\top);
+  \draw[|<->|] (\zt,\top+0.18) -- (\zf,\top+0.18) node[midway,above]{run $=4.60$};
+  \draw[|<->|] (-0.2,0) -- (-0.2,\top) node[midway,left]{rise $=1.08$};
+  \draw (\zf-0.9,0) arc (180:166.8:0.9) node[midway,left=2pt]{$\alpha$};
+  \node[above right, font=\footnotesize] at (3.4,0.75) {deck length $=\sqrt{1.08^2+4.60^2}=4.725$};
+  % vehicle axles at z = 3.0 -/+ 1.73 (front toward smaller z)
+  \pgfmathsetmacro{\yf}{1.08*(5.2-1.27)/4.6}
+  \pgfmathsetmacro{\yr}{1.08*(5.2-4.73)/4.6}
+  \draw[smcyan!50!black, line width=1.4pt] (1.27,\yf) -- (4.73,\yr);
+  \fill[smcyan!50!black] (1.27,\yf) circle (3pt) node[above left]{front axle $y_f=0.923$};
+  \fill[smcyan!50!black] (4.73,\yr) circle (3pt) node[above right]{rear axle $y_r=0.110$};
+  \node[smcyan!50!black, below=3pt] at (3.0,0.50) {$\beta=\operatorname{atan2}(y_f-y_r,3.46)=13.21^\circ$};
+\end{tikzpicture}

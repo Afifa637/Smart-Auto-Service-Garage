@@ -1,0 +1,23 @@
+% One scissor stack drawn to scale for h = 1.10 m (theta = 14.75 deg), from drawScissorStack().
+\begin{tikzpicture}[x=1.15cm, y=1.15cm, font=\small]
+  \pgfmathsetmacro{\L}{3.30}
+  \pgfmathsetmacro{\th}{14.75}
+  \pgfmathsetmacro{\r}{\L*sin(\th)}
+  \pgfmathsetmacro{\s}{\L*cos(\th)}
+  \fill[gray!25] (-2.1,0) rectangle (2.1,0.22);
+  \node[below] at (0,0) {base frame top $y=0.22$};
+  \foreach \k in {0,1}{
+    \pgfmathsetmacro{\yb}{0.22+\k*\r}
+    \draw[line width=2.2pt, smcyan!55!black] (-\s/2,\yb) -- (\s/2,\yb+\r);
+    \draw[line width=2.2pt, smcyan!35] (\s/2,\yb) -- (-\s/2,\yb+\r);
+    \fill (-\s/2,\yb) circle (2pt); \fill (\s/2,\yb) circle (2pt);
+    \fill[smamber!70!black] (0,\yb+\r/2) circle (2.4pt);}
+  \node[right, smamber!70!black] at (0.12,0.22+\r/2) {$y_{\text{mid}}=0.64$};
+  \node[right, smamber!70!black] at (0.12,0.22+1.5*\r) {$y_{\text{mid}}=1.48$};
+  \fill[yellow!60!black] (-2.6,0.22+2*\r) rectangle (2.6,0.22+2*\r+0.28);
+  \node[above] at (0,0.22+2*\r+0.28) {platform 0.18 + pad 0.10: top $=1.08+h=2.18$};
+  \draw[|<->|] (2.35,0.22) -- (2.35,0.22+2*\r) node[midway,right]{$2L\sin\theta=1.68$};
+  \draw[|<->|] (-\s/2,-0.45) -- (\s/2,-0.45) node[midway,below=1pt]{$L\cos\theta=3.19$};
+  \draw (-\s/2+0.75,0.22) arc (0:\th:0.75) node[midway,right=1pt]{$\theta$};
+  \node[left] at (-\s/2-0.05,0.22+\r/2+0.2) {$L=3.30$};
+\end{tikzpicture}

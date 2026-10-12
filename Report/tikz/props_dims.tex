@@ -1,0 +1,46 @@
+% prop dimensions drawn to scale (metres) from drawWorkbench / drawWorkStool; x=y=1.45cm per metre
+\begin{tikzpicture}[x=1.45cm,y=1.45cm,font=\footnotesize]
+\begin{scope}[shift={(-1.18,0)}]
+\draw[gray] (-1.4,0) -- (1.4,0);
+\fill[smsteel!35] (-1.175,0.995) rectangle (1.175,2.445);
+\fill[smamber!55] (-1.175,0.8575) rectangle (1.175,0.9425);
+\fill[smsteel!70] (-1.0975,0.03) rectangle (-1.0175,0.9);
+\fill[smsteel!70] (1.0175,0.03) rectangle (1.0975,0.9);
+\fill[smsteel!45] (-0.2570,0.2975) rectangle (1.1030,0.3425);
+\draw[fill=white] (-0.1880,0.3650) rectangle (1.0340,0.4950);
+\draw[fill=white] (-0.1880,0.5150) rectangle (1.0340,0.6450);
+\draw[fill=white] (-0.1880,0.6650) rectangle (1.0340,0.7950);
+\draw[<->] (-1.175,-0.18) -- (1.175,-0.18) node[midway,below] {$W=2.35$};
+\draw[<->] (1.45,0) -- (1.45,0.9) node[midway,right] {0.90};
+\draw[<->] (-1.45,0.9575) -- (-1.45,2.445) node[midway,left] {1.45};
+\node at (0,1.7) {pegboard + 16 tools};
+\node[above] at (0,2.5) {\textbf{workbench} (front)};
+\end{scope}
+\begin{scope}[shift={(2.75,0)}]
+\draw[gray] (-0.5,0) -- (0.5,0);
+\fill[smsteel!80] (-0.03,0.035) rectangle (0.03,0.405);
+\fill[smsteel!60] (-0.0925,0.385) rectangle (0.0925,0.425);
+\fill[smsteel!85] (-0.27,0.035) rectangle (0.27,0.075);
+\fill[black] (-0.270,0.03) circle (0.03);
+\fill[black] (0.270,0.03) circle (0.03);
+\draw[fill=smcyan!55] (0,0.492) ellipse (0.2075 and 0.056);
+\draw[fill=smcyan!40] (0,0.535) ellipse (0.185 and 0.034);
+\draw[<->] (0.42,0) -- (0.42,0.569) node[midway,right] {0.569};
+\node[above] at (0,0.7) {\textbf{work stool}};
+\end{scope}
+\begin{scope}[shift={(4.4,0.4)}]
+\draw[line width=2pt,smsteel] (0,0) -- (0.000,0.270);
+\fill[black] (0.000,0.270) circle (0.03);
+\draw[line width=2pt,smsteel] (0,0) -- (-0.257,0.083);
+\fill[black] (-0.257,0.083) circle (0.03);
+\draw[line width=2pt,smsteel] (0,0) -- (-0.159,-0.218);
+\fill[black] (-0.159,-0.218) circle (0.03);
+\draw[line width=2pt,smsteel] (0,0) -- (0.159,-0.218);
+\fill[black] (0.159,-0.218) circle (0.03);
+\draw[line width=2pt,smsteel] (0,0) -- (0.257,0.083);
+\fill[black] (0.257,0.083) circle (0.03);
+\draw[smcyan!70!black,thick] (0,0) circle (0.2075);
+\draw[->] (0.1,0) arc (0:72:0.1) node[midway,right] {\tiny72$^\circ$};
+\node[below] at (0,-0.4) {5 legs $\times\,72^\circ$};
+\end{scope}
+\end{tikzpicture}

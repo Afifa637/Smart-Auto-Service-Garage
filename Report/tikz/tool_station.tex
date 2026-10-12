@@ -1,0 +1,18 @@
+% tool station, top view (x right, z down), dimensions from drawRobotToolStation()
+\begin{tikzpicture}[x=1.45cm,y=1.45cm,font=\footnotesize]
+\fill[smsteel!25] (-1.175,-0.925) rectangle (1.175,0.925);
+\draw[thick] (-1.175,-0.925) rectangle (1.175,0.925);
+\foreach \sx in {-1,1} \foreach \sz in {-1,1} \fill[black] (\sx*1.0,\sz*0.78) circle (2.2pt);
+\draw[fill=smcyan!25,draw=smcyan!80!black,thick] (-0.78,-0.52) circle (0.23);
+\node at (-0.78,-0.52) {scanner};
+\draw[fill=smamber!25,draw=smamber!80!black,thick] (0.78,-0.52) circle (0.23);
+\node at (0.78,-0.52) {driver};
+\draw[fill=smamber!25,draw=smamber!80!black,thick] (-0.78,0.52) circle (0.23);
+\node at (-0.78,0.52) {gripper};
+\draw[fill=smcyan!25,draw=smcyan!80!black,thick] (0.78,0.52) circle (0.23);
+\node at (0.78,0.52) {polisher};
+\fill[smamber!70] (-0.2,-0.12) rectangle (0.2,0.12); \node[below] at (0,0.12) {sponge};
+\draw[<->] (-1.175,1.2) -- (1.175,1.2) node[midway,above] {2.35 m};
+\draw[<->] (1.35,-0.925) -- (1.35,0.925) node[midway,right] {1.85 m};
+\node[gray] at (0,-1.18) {legs: black dots at $(\pm1.00,\pm0.78)$};
+\end{tikzpicture}
